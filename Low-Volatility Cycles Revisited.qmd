@@ -1181,4 +1181,4 @@ ggplot(cc, aes(1e4 * cost, sharpe, colour = strategy, linetype = strategy)) + ge
 
 All results are produced by build.R, which reads the university database read-only (`r paste0("\\texttt{", gsub("_", "\\\\_\\\\allowbreak{}", basename(res$meta$db)), "}")`, `r f2(res$meta$db_size / 2^30, 1)` GB, last modified `r format(res$meta$db_mtime, "%d %B %Y")`), builds the stock panel, estimates all betas, forms all portfolios and stores every table and time series in results/res.rds; paper.qmd reads only results/res.rds. 
 
-**Use of AI tools.** We used an AI assistant (Anthropic's Claude) to write  and debug the R code, to check the results and to draft and revise the text. The authors are responsible for the content.
+**Use of AI tools.** We used an AI assistant (Anthropic's Claude) to write  and debug the R code, to check the results and to draft and revise the text.
