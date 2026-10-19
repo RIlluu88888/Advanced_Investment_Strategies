@@ -12,7 +12,7 @@ author:
     affiliations: "University of Liechtenstein"
 date: today
 date-format: "MMMM YYYY"
-keywords: [low-volatility anomaly, betting against beta, valuation, momentum, transaction costs, replication]
+keywords: [low-volatility anomaly, betting against beta, valuation, momentum, replication, transaction costs]
 format:
   pdf:
     documentclass: article
