@@ -1,0 +1,1184 @@
+---
+title: "Low-Volatility Cycles Revisited"
+subtitle: "Replication, Post-Sample Evidence and the Implementation of Low-Beta Investing"
+author:
+  - name: "Benjamin Halavac"
+    affiliations: "University of Liechtenstein"
+  - name: "Fatma Ünalan"
+    affiliations: "University of Liechtenstein"
+  - name: "Samed Ciftcioglu"
+    affiliations: "University of Liechtenstein"
+  - name: "Mohamed Rilwan Mohamed Ismail"
+    affiliations: "University of Liechtenstein"
+date: today
+date-format: "MMMM YYYY"
+keywords: [low-volatility anomaly, betting against beta, valuation, momentum, transaction costs, replication]
+format:
+  pdf:
+    documentclass: article
+    pdf-engine: lualatex
+    papersize: a4
+    fontsize: 11pt
+    geometry: [top=2.3cm, bottom=2.3cm, left=2.4cm, right=2.4cm]
+    number-sections: true
+    colorlinks: true
+    linkcolor: "black"
+    citecolor: "blue"
+    fig-pos: "htbp"
+    tbl-cap-location: top
+    fig-cap-location: bottom
+    include-in-header:
+      text: |
+        \usepackage{booktabs}
+        \usepackage{threeparttable}
+        \usepackage{makecell}
+        \usepackage{float}
+        \usepackage{placeins}
+        \usepackage{microtype}
+        \usepackage{setspace}
+        \setstretch{1.08}
+        \usepackage[font=small,labelfont=bf]{caption}
+bibliography: refs.bib
+link-citations: true
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    dev: "pdf"
+    fig.align: "center"
+---
+
+```{r}
+#| label: setup
+suppressPackageStartupMessages({
+  library(data.table); library(knitr); library(kableExtra); library(ggplot2); library(scales)
+})
+res <- readRDS("results/res.rds")
+repo_url <- ""   # GitHub repository of the group (to be filled in by the authors; printed in Appendix C when not empty)
+neg <- function(x) sub("^-", "\\\\textminus{}", x)                               # typographic minus sign (LaTeX)
+p2 <- function(x, d = 2) neg(sub("^-(0\\.?0*)$", "\\1", formatC(100 * x, format = "f", digits = d)))   # percent
+f2 <- function(x, d = 2) neg(sub("^-(0\\.?0*)$", "\\1", formatC(x, format = "f", digits = d)))         # no "-0.00"
+pv <- function(p) ifelse(is.na(p), "", ifelse(p < 0.001, "<0.001", ifelse(p < 0.1, formatC(p, format = "f", digits = 3),
+                                                                           formatC(p, format = "f", digits = 2))))
+mdate <- function(m) as.Date(sprintf("%d-%02d-01", m %/% 12L, m %% 12L + 1L))   # first day of month m
+eom <- function(m) mdate(m + 1L) - 1                                               # last day of month m
+ym <- function(y, m) y * 12L + m - 1L                                              # month id, as in build.R
+row_of <- function(dt, name) dt[strategy == name]
+s <- res$series; cfg <- res$cfg
+in_p <- function(m, p) m >= p[1] & m <= p[2]
+theme_paper <- theme_minimal(base_size = 9) +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_line(colour = "grey90", linewidth = 0.3),
+        legend.position = "bottom", legend.title = element_blank(), plot.title = element_text(size = 9, face = "bold"),
+        axis.title = element_text(size = 8), strip.text = element_text(face = "bold", size = 8.5))
+pal <- c("#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#52514e")   # low beta, high beta, L-H, beta neutral, market/benchmark
+col_mv <- "#c2185b"; col_ew <- "#eda100"; col_buf <- "#86b6ef"     # minimum variance, 1/N, buffer rule (same colours in every figure)
+nw_l <- function(n) floor(4 * (n / 100)^(2 / 9))                   # Newey-West rule-of-thumb lag, as nw_lag() in R/functions.R
+log_breaks <- c(0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500)
+ramp5 <- c("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#0d366b")
+nber <- data.table(start = as.Date(c("1929-08-01","1937-05-01","1945-02-01","1948-11-01","1953-07-01",
+  "1957-08-01","1960-04-01","1969-12-01","1973-11-01","1980-01-01","1981-07-01","1990-07-01",
+  "2001-03-01","2007-12-01","2020-02-01")), end = as.Date(c("1933-03-01","1938-06-01","1945-10-01",
+  "1949-10-01","1954-05-01","1958-04-01","1961-02-01","1970-11-01","1975-03-01","1980-07-01",
+  "1982-11-01","1991-03-01","2001-11-01","2009-06-01","2020-04-01")))
+tab <- function(df, caption, label, notes = NULL, align = NULL, fs = 8.5, header = NULL, wide = FALSE) {
+  k <- kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, caption = caption, label = label,
+           align = align, linesep = "") |>
+    kable_styling(latex_options = c("hold_position", if (wide) "scale_down"), font_size = fs, position = "center")
+  if (!is.null(header)) k <- add_header_above(k, header, escape = TRUE, bold = FALSE)
+  if (!is.null(notes)) k <- footnote(k, general = notes, general_title = "", threeparttable = TRUE, escape = FALSE)
+  k
+}
+interleave <- function(est, tst, lab) {   # estimates with t-statistics underneath
+  out <- list()
+  for (i in seq_len(nrow(est))) {
+    out[[2 * i - 1]] <- cbind(lab[i], est[i, ])
+    out[[2 * i]] <- cbind("", as.data.frame(lapply(tst[i, ], function(x) ifelse(is.na(x) | x == "", "", paste0("(", x, ")")))))
+  }
+  rbindlist(lapply(out, as.data.table), use.names = FALSE)
+}
+states_lab <- c("1 (low)", "2", "3", "4", "5 (high)")
+cl <- function(x, d) formatC(ceiling(x * 10^d) / 10^d, format = "f", digits = d)   # upper bound at d decimals
+andlist <- function(v) if (length(v) <= 1) as.character(v) else paste(paste(v[-length(v)], collapse = ", "), "and", v[length(v)])
+```
+
+```{r}
+#| label: facts
+# ---- every number quoted in the text is taken from res; qualitative claims are checked below ----
+T1 <- res$T1
+gfk_t1 <- data.table(strategy = c("Q1","Q2","Q3","Q4","Q5","Low - high","Beta neutral","Market"),
+  arith = c(.89,.92,.86,.85,.73,.16,.71,.87), geo = c(.83,.84,.75,.70,.47,-.02,.67,.76),
+  beta = c(.47,.76,.98,1.24,1.76,-1.29,.03,1.00), sharpe = c(.45,.42,.32,.27,.15,.10,.46,.33))
+cmp <- merge(T1, gfk_t1, by = "strategy", suffixes = c("", "_p"))
+gap_bp <- mean(abs(100 * cmp$arith - cmp$arith_p)) * 100
+gap_beta <- max(abs(cmp$beta_ante - cmp$beta))
+gap_sr <- max(abs(cmp$sharpe - cmp$sharpe_p))
+q <- function(tb, st, v) tb[strategy == st][[v]]
+A <- res$T2A
+B2 <- res$T2BC
+B <- dcast(B2[h > 1], strategy + state ~ h, value.var = "value")
+b12 <- function(stg, st) B[strategy == stg & state == st, `12`]
+b60 <- function(stg, st) B[strategy == stg & state == st, `60`]
+tb <- function(stg, st, hh = 12) B2[strategy == stg & state == st & h == hh, t_boot]
+ci <- function(stg, st, hh = 12) { z <- B2[strategy == stg & state == st & h == hh]; 100 * (z$value + c(-1.96, 1.96) * z$se_boot) }
+# GFKSW Table 3 (their p. 55-56): average window alphas (% per month) and t-statistics at t+12 and t+60, states 1-5
+gfk3 <- list(
+  LH = list(capm = cbind(a12 = c(.07,.45,-.11,.46,1.04), t12 = c(.10,.90,-.34,2.62,5.11), a60 = c(.14,.36,.37,.39,.92), t60 = c(1.15,1.23,2.25,2.69,4.28)),
+            f4   = cbind(a12 = c(.10,.18,.03,.06,.40), t12 = c(.31,.66,.16,.24,1.86), a60 = c(.22,.15,-.11,-.09,.29), t60 = c(1.30,.72,-.67,-.58,1.72))),
+  BN = list(capm = cbind(a12 = c(.00,.15,-.09,.27,.68), t12 = c(-.01,.44,-.51,2.56,5.09), a60 = c(.02,.15,.21,.23,.52), t60 = c(.18,.67,2.07,2.91,4.07)),
+            f4   = cbind(a12 = c(.03,.04,-.01,.06,.34), t12 = c(.19,.20,-.07,.29,1.85), a60 = c(.11,.06,-.07,-.06,.16), t60 = c(.91,.39,-.64,-.53,1.02))))
+# GFKSW Table 2, Panel A: B/P spread range and average number of stocks per extreme quintile by state
+gfk2a <- data.table(state = 1:5, from = c(-.55,-.01,.12,.22,.27), to = c(-.01,.12,.22,.27,.59), n = c(104,101,108,106,94))
+gB <- list(LH = rbind(c(-5.80,-3.63,-3.37,-3.29,-2.83), c(4.64,-.67,.24,.33,.24), c(-6.84,-5.30,-3.99,-2.50,-2.23),
+                      c(3.36,1.62,-2.45,-3.11,-2.81), c(12.52,8.45,6.45,4.96,4.40)),
+           BN = rbind(c(2.30,3.71,3.06,1.04,1.62), c(3.97,1.51,2.06,2.47,2.61), c(2.53,2.28,3.31,3.74,3.49),
+                      c(5.63,4.73,4.09,4.35,4.34), c(10.27,10.42,9.25,8.99,9.10)))
+D51 <- res$boot_d51
+d51 <- function(stg, v = "d_ret", hh = 12) D51[strategy == stg & h == hh][[v]]
+d51ci <- function(stg, hh = 12) 100 * (d51(stg, "d_ret", hh) + c(-1.96, 1.96) * d51(stg, "se_d_ret", hh))
+LD <- res$lodo
+ld <- function(dec, v) if (is.na(dec)) LD[is.na(dropped)][[v]] else LD[dropped == dec][[v]]
+ld_range <- function(v) range(LD[!is.na(dropped)][[v]])
+ld_dec <- function(v, f) { z <- LD[!is.na(dropped)]; z$dropped[f(z[[v]])] }
+wid_lh <- B2[strategy == "LH" & h == 12, 2 * 1.96 * 100 * se_boot]
+SI <- res$sim_inference[, lapply(.SD, mean), keyby = h, .SDcols = c("rej_gfksw", "rej_hac", "rej_boot")]
+si <- function(hh, v) SI[h == hh][[v]]
+W <- res$T34
+w_ <- function(stg, st, hh, v) W[strategy == stg & state == st & h == hh][[v]]
+CT <- res$T34_ct
+ss <- res$state_sens
+agree_pool <- ss[variant == "pool", agree[1]]; agree_month <- ss[variant == "month", agree[1]]
+mid_shift <- ss[strategy == "LH" & h == 12 & state %in% 3:4, max(abs(value - value[variant == "base"])), by = state][, max(V1)]
+cs <- res$conv_sens
+dd <- res$data_diag
+imp <- dd$impact
+im <- function(per, var, v) imp[period == per & variant == var][[v]]
+n_win <- res$T2BC[strategy == "LH" & state == 1]
+sp_rep <- s[in_p(mid, cfg$rep)]                           # 540 formation months, December 1967 to November 2012
+end12 <- s[fmid == ym(2012L, 12L), spread]                # spread measured at the end of December 2012
+pp <- res$perf_periods
+pf <- function(per, port, v) pp[period == per & portfolio == port][[v]]
+sc <- res$state_counts
+cnt <- function(per, st) { x <- sc[period == per & state == st, months]; if (length(x)) x else 0L }
+rtc <- res$rt_counts
+rcnt <- function(per, st) { x <- rtc[period == per & state == st, months]; if (length(x)) x else 0L }
+pr <- res$pred
+srq <- res$sr_q1_mkt
+tm <- res$timing
+tmr <- function(per, stg, rl, v) tm[period == per & strategy == stg & rule == rl][[v]]
+xA <- res$extA; dm <- res$beta_dm; srb <- res$sr_bnd_vs_m60
+dmv <- function(e1, e2, v) dm[est1 == e1 & est2 == e2][[v]]
+dm_key <- dm[paste(est1, est2) %in% c("beta_D36 beta_M36", "beta_M36 beta_M60", "beta_D3 beta_D36", "beta_D36 beta_M60", "beta_DD12 beta_M60")]
+LO <- res$LO_full; LOn <- res$LO_full_net; LOp <- res$LO_post_net; LOpub <- res$LO_pub_net
+BE <- res$LO_breakeven; LS <- res$LS_full; LSp <- res$LS_post; LSpub <- res$LS_pub
+a4ci <- with(row_of(LO, "LowBeta"), alpha_4f + c(-1.96, 1.96) * alpha_4f / t_4f)   # normal 95% interval of the four-factor alpha (Newey-West s.e.)
+dv <- res$div
+dc <- res$daily_check; rc <- res$recon
+fr <- dcast(res$freq, strategy ~ freq, value.var = c("vol", "sharpe", "mdd", "kurt", "mean_ex"))
+fb <- res$freq_beta
+roll <- res$rolling
+rs <- roll[, .(sr = mean(sr_lb > sr_vw), mv = mean(sr_mv > sr_vw), act = mean(act_lb > 0), a = mean(a_lb > 0),
+               amv = mean(a_mv > 0), vol = mean(vol_lb < vol_vw), volmv = mean(vol_mv < vol_vw),
+               vr_min = min(vol_lb / vol_vw), vr_max = max(vol_lb / vol_vw)), by = window]
+lf <- c("LowBeta", "HighBeta", "Min-variance", "Large-cap VW", "Large-cap EW", "Low - high")
+# v4: checks of the inference for the state averages and the central contrast (Section 3.3, Appendix Tables inf and size)
+BC <- res$boot_checks
+bc <- function(stg, meth, blk, v, st = "d51", hh = 12L) BC[strategy == stg & method == meth & block == blk & h == hh & stat == st][[v]]
+t_rng <- function(stg) range(BC[strategy == stg & method == "null" & h == 12 & stat == "d51", t])
+SCt <- res$sim_contrast
+sct <- function(stg, g, tst, st, v) SCt[strategy == stg & dgp == g & test == tst & stat == st][[v]]
+rej_rng <- function(tst, sts, g = c("iid", "garch")) 100 * range(SCt[test == tst & stat %in% sts & dgp %in% g, rej])
+VPW <- res$boot_vp_windows
+vpw <- function(stg, st, hh, v) VPW[strategy == stg & state == st & h == hh][[v]]
+vp_sig_h <- function(stg) VPW[strategy == stg & state == 5 & t_capm > 1.96, h]
+SV <- res$state_vol; DEP <- res$dependence
+sv <- function(stg, st) SV[strategy == stg & state == st, realised]
+se_lh <- B2[strategy == "LH" & h == 12, 100 * se_boot]
+# v4: daily return paths from CRSP's daily file (Section 8, Appendix Table daily)
+RCv <- res$recon[strategy == "Large-cap VW"]
+rcn <- function(cl) { x <- RCv[cls == cl, stock_months]; if (length(x)) x else 0L }
+dvv <- res$daily_variants
+dvx <- merge(dvv[variant != "base"], dvv[variant == "base", .(strategy, vol0 = vol, sr0 = sharpe, k0 = kurt, m0 = mdd, b0 = beta)], by = "strategy")
+dmx <- dvx[, .(d_vol = max(abs(vol - vol0)), d_sr = max(abs(sharpe - sr0)), d_k = max(abs(kurt - k0)),
+               d_mdd = max(abs(mdd - m0)), d_b = max(abs(beta - b0))), by = strategy]
+ex49 <- res$recon_cases[permno == 49365L][1]
+t78 <- res$t7t8; vrt <- res$vr
+conf <- dd$conflicts[in_p(mid, cfg$full) & !is.na(q)]                 # conflicts among stocks held in a beta quintile
+
+# ---- claim checks: rendering stops if a statement in the text is no longer supported ----------
+# (they flag text that must be rewritten after a recomputation; they never change a calculation)
+chk <- function(cond, msg) if (!isTRUE(all(cond))) stop("Claim no longer supported by results: ", msg)
+chk(dd$check_cm_vs_msf$max_abs_diff == 0 && dd$check_cm_vs_msf$cm_rows_without_msf == 0, "crsp_monthly returns identical to msf_v2")
+chk(dd$hold_check$no_return_in_samples == 0 && dd$hold_check$no_trade_from_1967_12 == 0, "no missing holding return in the samples; no-trade months only before 1968")
+chk(max(abs(imp[variant == "v2", lh] - imp[variant == "v3", lh])) < 1e-4, "delisting fix changes the mean L-H return by less than 1 bp")
+chk(gap_bp < 2 && gap_beta < 0.05, "Table 1 matches GFKSW to within 2 bp on average, betas within 0.05")
+chk(b12("LH", 5) > 0 && b12("LH", 1) < 0 && abs(100 * b12("LH", 5) - 12.52) < 1.5 && abs(100 * b12("LH", 1) + 5.80) < 1.5,
+    "L-H 12m close to GFKSW in states 1 and 5")
+chk(abs(100 * b12("BN", 5) - 10.27) < 1 && abs(100 * b12("BN", 1) - 2.30) > 1, "BN state 5 matches, state 1 does not")
+bn_neg <- B[strategy == "BN"][, .(state, `24`, `36`)]
+chk(all(B[strategy == "BN", `12`] > 0) && sum(B[strategy == "BN", c(`12`, `24`, `36`, `48`, `60`)] < 0) == 2 &&
+    bn_neg[state == 2, `24` < 0 & `36` < 0], "BN positive after every state at one year; negative only after state 2 at two and three years")
+chk(b12("BN", 5) == max(B[strategy == "BN", `12`]), "BN 12m highest in state 5")
+chk(identical(B2[strategy == "LH" & h == 12 & abs(t_boot) > 1.96, state], 5L) && identical(B2[strategy == "BN" & h == 12 & abs(t_boot) > 1.96, state], 4:5),
+    "bootstrap: one-year means significant only in state 5 (L-H) and states 4-5 (BN)")
+chk(res$T5[state == 5 & h == 12, value] == max(res$T5[h == 12, value]) && res$T5[state == 5 & h == 36, value] < 0 && res$T5[state == 1 & h == 12, value] < 0,
+    "1930-2012: state 5 best first year, negative from three years; state 1 negative")
+chk(W[h == 60, median(abs(t_gfk_capm) / abs(t_boot_capm))] > W[h == 12, median(abs(t_gfk_capm) / abs(t_boot_capm))] &&
+    W[h == 12, median(abs(t_boot_capm) / abs(t_gfk_capm))] <= 1, "bootstrap t mostly smaller at one year, gap larger at five years")
+chk(all(abs(c(d51("LH", "t_d_ret"), d51("BN", "t_d_ret")) - 1.96) < 0.3), "state 5 - state 1 contrast: t close to the 5% threshold for L-H and BN")
+chk(d51("LH", "t_d_ret", 60) < 1 && d51("LH", "t_d_ret", 36) < 1.645, "contrast insignificant at three and five years")
+chk(ld(2000L, "lh12") < 0.25 * ld(NA, "lh12") && ld(1980L, "a5_lh") < 0.25 * ld(NA, "a5_lh"), "single decades dominate the central results")
+chk(si(12, "rej_boot") < 0.08 && si(60, "rej_boot") < 0.08 && si(12, "rej_gfksw") > 0.10 && si(60, "rej_gfksw") > 0.25,
+    "bootstrap close to nominal size; GFKSW-style statistic over-rejects")
+chk(max(abs(W$t_boot_4f)) < 1.96, "no four-factor window alpha significant with the bootstrap")
+chk(all(W[state == 5, t_boot_capm] > 1.96), "state-5 CAPM alphas significant at every horizon (bootstrap)")
+chk(w_("LH", 1, 60, "t_gfk_4f") > 3 && abs(w_("LH", 1, 60, "t_boot_4f")) < 1.96, "state-1 60m four-factor alpha: GFKSW-style t > 3, bootstrap insignificant")
+chk(max(abs(CT$t_4f)) < 1.96 && all(CT[state == 5, t_capm] > 1.96), "calendar-time alternative: same pattern")
+chk(cnt("post", 4) == 0 && cnt("post", 5) == 0 && rcnt("post", 4) == 0 && rcnt("post", 5) == 0, "no post-2012 month in states 4-5")
+chk(pf("post", "LH", "mean_ex") < 0 && pf("post", "BN", "mean_ex") > 0 && pf("pub", "LH", "mean_ex") < 0 && pf("pub", "BN", "mean_ex") > 0,
+    "post-sample L-H negative, BN positive")
+chk(abs(pf("post", "Q1", "t_capm")) < 1.96 && abs(pf("pub", "Q1", "t_capm")) < 1.96, "Q1 CAPM alpha insignificant after 2012")
+chk(all(srq[period %in% c("post", "pub"), p] > 0.10), "Q1 vs market Sharpe difference insignificant after 2012")
+chk(pf("post", "Q1", "sharpe") < pf("post", "MKT", "sharpe"), "Q1 Sharpe below market since 2013")
+chk(tmr("post", "LH", "val", "invested") == 0 && tmr("pub", "LH", "val", "invested") == 0, "timing rule never invested after 2012")
+chk(tmr("full", "BN", "val", "sharpe_net") < tmr("full", "BN", "always", "sharpe_net"), "timing lowers BN net Sharpe")
+chk(tmr("full", "LH", "always", "sharpe_net") < 0 && tmr("full", "LH", "val", "sharpe_net") > 0, "timing turns L-H net Sharpe positive")
+chk(all(tm[period == "full" & !is.na(p_holm), p_holm] > 0.10), "no significant timing improvement")
+chk(dmv("beta_D36", "beta_M60", "dm_t") < 0 && dmv("beta_D36", "beta_M60", "p_holm") < 0.05 && dmv("beta_DD12", "beta_M60", "p_holm") < 0.05,
+    "D36 and DD12 forecasts significantly better than M60")
+chk(dmv("beta_D36", "beta_M36", "dm_t") < -1.96, "frequency effect at a 36-month window")
+chk(dmv("beta_M36", "beta_M60", "dm_t") > 1.96 && dmv("beta_D3", "beta_D36", "dm_t") > 1.96 && abs(dmv("beta_D12", "beta_D36", "dm_t")) < 1.96,
+    "window effects: short windows worse")
+chk(all(srb$p_holm > 0.10), "no significant strategy difference across beta estimators")
+chk(xA[spec == "beta_M60", val_effect] == max(xA$val_effect) && xA[spec == "beta_M60", bnd_sharpe] == max(xA$bnd_sharpe),
+    "M60 has the largest valuation effect and BN Sharpe ratio")
+chk(row_of(LOn, "LowBeta")$sr_diff > 0 && row_of(LOn, "LowBeta")$p_sr > 0.10, "small insignificant net Sharpe advantage")
+chk(all(LOn[strategy %in% c("LowBeta", "LowBeta buffer", "LowBeta quarterly", "LowBeta (daily 12m)", "Min-variance", "Large-cap EW"), p_holm] > 0.10),
+    "no Holm-significant long-only Sharpe difference")
+chk(row_of(LO, "LowBeta")$vol < row_of(LO, "Large-cap VW")$vol && row_of(LO, "LowBeta")$mdd < row_of(LO, "Large-cap VW")$mdd &&
+    row_of(LO, "LowBeta")$mean_ex < row_of(LO, "Large-cap VW")$mean_ex, "low beta: lower risk, lower excess return")
+chk(row_of(LOp, "LowBeta")$sr_diff < 0, "Q1 net Sharpe below benchmark 2013-2024")
+chk(row_of(LO, "Min-variance")$alpha_capm == max(LO[strategy != "Market (FF)", alpha_capm]) &&
+    row_of(LOn, "Min-variance")$sharpe == max(LOn[strategy != "Market (FF)", sharpe]), "min-variance: largest CAPM alpha and net Sharpe ratio")
+chk(row_of(BE, "LowBeta buffer")$be_sr == max(BE$be_sr, na.rm = TRUE), "buffer rule has the highest break-even cost")
+chk(abs(row_of(dv, "LowBeta")$dv_pct - row_of(dv, "Large-cap VW")$dv_pct) < 0.05 && row_of(dv, "Min-variance")$dv_pct < row_of(dv, "LowBeta")$dv_pct,
+    "low beta as liquid as the benchmark by dollar-volume rank; min-var less")
+chk(dc[strategy %in% lf, max(max_bp)] < 1e-6, "daily and monthly engines identical for the long-only and L-H portfolios")
+chk(!any(res$recon$cls == "unexplained") && nrow(conf) == 4L && rcn("conflict") == 4L, "every daily-monthly difference is a documented delisting case; four conflicts")
+chk(dmx[, max(d_sr)] < 0.01 && dmx[, max(d_vol)] < 0.001 && dmx[, max(d_b)] < 0.01 && dmx[, max(d_mdd)] < 0.005, "daily delisting treatment immaterial")
+chk(all(abs(vrt[strategy %in% c("LowBeta", "Large-cap VW", "Min-variance"), z]) < 1.96) && all(vrt[strategy %in% c("LowBeta", "Large-cap VW"), vr] < 1),
+    "variance ratios of Q1 and benchmark below one but insignificant")
+chk(t78[strategy != "Market (FF)", max(abs(sr_t8_monthly_rf - sr_t7), max_ret_diff)] < 1e-8, "frequency vs long-only table: same returns, different T-bill series")
+chk(all(t_rng("LH") > 1.9 & t_rng("LH") < 2.2) && bc("LH", "vp", 24L, "t") < 1.96 && bc("BN", "vp", 24L, "t") < 1.96,
+    "contrast t between 1.9 and 2.2 across block lengths, below 1.96 with the volatility-preserving bootstrap")
+chk(sct("LH", "observed_vol", "null24", "d51", "crit95") > d51("LH", "t_d_ret") &&
+    abs(sct("BN", "observed_vol", "null24", "d51", "crit95") - d51("BN", "t_d_ret")) < 0.1, "size-adjusted critical values at or above the contrast t")
+chk(max(rej_rng("null24", c("state1", "state5", "d51"))) < 7 && min(rej_rng("gfksw_nw", c("state1", "state5"))) > 10 &&
+    min(rej_rng("pairs24", c("state1", "state5", "d51"))) > 9, "simulated size (iid, GARCH): block bootstrap near nominal, GFKSW-style and pairs over-reject")
+chk(sct("LH", "observed_vol", "null24", "d51", "rej") > 0.07 && sct("LH", "observed_vol", "vp24", "d51", "rej") < sct("LH", "observed_vol", "null24", "d51", "rej"),
+    "baseline bootstrap over-rejects under the observed volatility path, less so the volatility-preserving one")
+chk(sv("LH", 5) > 1.3 * max(SV[strategy == "LH" & state < 5, realised]), "L-H volatility much higher after state 5")
+chk(vpw("LH", 5, 12, "t_ret") < 1.96 && all(VPW[strategy == "BN" & h == 12 & state %in% 4:5, t_ret] > 1.96) &&
+    all(abs(VPW[!(strategy == "BN" & state %in% 4:5) & h == 12, t_ret]) < 1.96), "volatility-preserving: one-year means significant only for BN in states 4-5")
+chk(max(abs(VPW$t_4f)) < 1.96 && all(VPW[state == 5 & h == 12, t_capm] < 1.96) && length(vp_sig_h("LH")) > 0 && length(vp_sig_h("BN")) > 0,
+    "volatility-preserving: no four-factor alpha, state-5 CAPM alphas significant only at some horizons")
+chk(si(12, "rej_hac") > 0.10 && si(60, "rej_hac") > 0.25, "calendar-index HAC over-rejects")
+chk(nrow(dm_key) == 5L && all(dm_key$p_holm_all < 0.05),
+    "beta forecast results survive a Holm adjustment over all ten comparisons")
+chk(q(T1, "Beta neutral", "beta_real") / q(T1, "Beta neutral", "beta_real_se") > 3, "BN realised beta clearly positive")
+chk(max(BE$be_sr, na.rm = TRUE) > 1e4 * max(res$LO_costs$cost) && abs(row_of(BE, "LowBeta")$be_sr - 1e4 * max(res$LO_costs$cost)) < 5,
+    "Q1 break-even at the edge of the cost scenarios, buffer far beyond")
+chk(all(fr[strategy %in% c("LowBeta", "Large-cap VW", "HighBeta"), vol_daily > vol_monthly]) &&
+    fr[strategy == "Min-variance", vol_daily < vol_monthly], "daily vol above monthly except min-var")
+chk(all(fr[strategy %in% lf, mdd_daily >= mdd_monthly - 1e-12]), "daily drawdowns at least as deep")
+chk(rs[window == 60, vol] > 0.95 && rs[window == 60, act] < 0.5, "lower volatility in almost all, higher return in under half of 60m windows")
+chk(pf("full", "Q1", "a_capm") > 0 && pf("full", "Q1", "t_capm") < 1.96, "full-sample Q1 CAPM alpha positive, t < 1.96")
+# ---- revision 2: additional facts and checks ----------------------------------------------------
+ahv <- function(smp, stg, v) pr[sample == smp & strategy == stg][[v]]
+short_share <- -pf("rep", "Q5", "a_capm") / (pf("rep", "Q1", "a_capm") - pf("rep", "Q5", "a_capm"))   # share of the L-H CAPM alpha from the short leg
+gfk_n <- nrow(dd$gfksw_cases)
+gfk_rep_dt <- dd$gfksw_cases[in_p(mid + 1L, cfg$rep)]; gfk_rep <- nrow(gfk_rep_dt); gfk_ext <- gfk_rep_dt[q %in% c(1L, 5L), .N]   # cases held in 1968-2012 return months
+chk(gfk_rep <= 10 && gfk_ext <= 2 && gfk_n > gfk_rep, "few exchange-drop delistings among held large caps in 1968-2012")
+chk(uniqueN(ss$variant) == 6, "baseline plus five classification variants (two timing/weighting, three trimming)")
+agree_fy <- ss[variant == "fy", agree[1]]; agree_vw <- ss[variant == "vw", agree[1]]
+mid_shift <- ss[strategy == "LH" & h == 12 & state %in% 2:4, max(abs(value - value[variant == "base"])), by = state][, max(V1)]
+SR_ <- res$states_rep[, yr := fmid %/% 12L]
+yrs5_2000 <- SR_[state == 5 & yr >= 2000 & yr <= 2009, sort(unique(yr))]
+lh12_f <- local({ x <- s[order(mid)]; cs <- c(0, cumsum(log1p(x$LH)))
+  function(f) { i <- match(f + 1L, x$mid); exp(cs[i + 12L] - cs[i]) - 1 } })                    # chained 12-month L-H excess return after formation month f
+lh_after <- function(yrs, st) mean(lh12_f(SR_[state == st & yr %in% yrs, fmid]))
+chk(short_share > 0.6 && short_share < 0.72, "about two thirds of the L-H CAPM alpha from the short leg")
+chk(ahv("rep", "BN", "ah_t") > 2.58 && ahv("rep", "LH", "ah_t") < 1.96 && ahv("rep", "LH", "ah_corr_uv") < 0, "bias-corrected predictive t: BN significant at 1%, L-H not; negative innovation correlation")
+chk(all(abs(c(ahv("post", "LH", "ah_t"), ahv("post", "BN", "ah_t"))) < 1.96), "no predictive power after 2012")
+chk(pr[sample == "rep" & strategy == "BN", ctrl_t] > 2.58 && pr[sample == "rep" & strategy == "LH", ctrl_t] < 1.96 && pr[sample == "rep" & strategy == "LH", cor_spread_mkt12] > 0,
+    "controlling for the trailing market return: BN spread t stays above 2.58, L-H below 1.96; positive correlation")
+chk(gfk_n > 0 && abs(im("rep", "gfksw", "lh") - im("rep", "v3", "lh")) < 1e-6 &&
+    dd$impact_states[, max(abs(value[variant == "gfksw"] - value[variant == "v3"])), by = .(strategy, h, state)][, max(V1)] < 0.01,
+    "GFKSW delisting rule changes the 1968-2012 L-H mean by less than 0.01 bp and state returns by less than 1 pp")
+chk(ss[variant != "base" & strategy == "LH" & h == 12, .(ok = abs(value[state == 3] + 0.0684) > 0.02 | abs(value[state == 4] - 0.0336) > 0.02), by = variant][, all(ok)],
+    "no classification variant reproduces GFKSW's middle states")
+chk(setequal(SR_[state == 5, .N, by = yr][N >= 7, yr], c(1978:1981, 1988, 1999, 2000)) && all(SR_[state == 1, .N, by = yr][N >= 5, yr] %in% c(1970:1974, 2005:2012)),
+    "timing of the cheapest and most expensive states")
+chk(lh_after(yrs5_2000, 5) > 0.15 && lh_after(2008:2009, 1) < -0.15, "2000s episodes: technology bust after state 5, high-beta rebound after state 1")
+chk(abs(1 - row_of(LO, "LowBeta")$vol / row_of(LO, "Large-cap VW")$vol - 0.2) < 0.04, "volatility about a fifth lower")
+chk(row_of(LOn, "LowBeta capped")$sharpe >= row_of(LOn, "LowBeta")$sharpe, "capped quintile: net Sharpe ratio not below Q1's")
+chk(row_of(LO, "Min-variance NL")$vol == min(LO[strategy != "Market (FF)", vol]) && row_of(LO, "Min-variance NL")$to == max(LO$to) &&
+    row_of(LOn, "Min-variance NL")$sharpe < row_of(LO, "Min-variance NL")$sharpe - 0.03 && row_of(LOn, "Min-variance NL")$sharpe < row_of(LOn, "LowBeta")$sharpe,
+    "NL minimum variance: lowest volatility, highest turnover, loses its advantage after costs")
+chk(all(LOp[!is.na(p_holm), sr_diff] < 0), "since 2013 every candidate below the benchmark net of costs")
+chk(all(abs(c(LS$t4_g, LS$t4_n, LSp$t4_g, LSp$t4_n, LSpub$t4_g, LSpub$t4_n)) < 1.96), "no long-short four-factor alpha significant")
+chk(LS[strategy == "Beta neutral (shrunk beta)", sharpe_n] < LS[strategy == "Beta neutral (fixed 25%)", sharpe_n] && abs(pf("rep", "BNs", "beta")) < 0.1,
+    "shrunk-beta BN close to beta-neutral, lower Sharpe ratio")
+chk(pf("post", "LH", "beta") * pf("post", "MKT", "mean_ex") < pf("post", "LH", "mean_ex") && pf("post", "LH", "a_capm") > 0, "post-2012 L-H loss is beta")
+chk(setequal(dm[est2 == "beta_M60" & dm_t < 0 & p_holm < 0.05, est1], c("beta_D36", "beta_DD12")), "only D36 and DD12 significantly better than M60")
+chk(all(xA[grepl("beta_D", spec), bnd_sharpe] < xA[spec == "beta_M60", bnd_sharpe]), "every daily specification has a lower BN Sharpe ratio")
+chk(res$T5[state == 5 & h == 12, value] > 0 && res$T5[state == 5 & h == 24, value] > 0 && all(res$T5[state == 5 & h >= 36, value] < 0) &&
+    all(dcast(res$T5, h ~ state, value.var = "value")[, `5` > `1`]), "1930-2012: state 5 above state 1 at every horizon, positive only in the first two years")
+chk(length(res$minvar_nl_missing) == 0, "NL minimum variance solved in every month")
+# ---- revision 2, independent check: further claim checks ----------------------------------------
+chk(round(100 * dd$mkt_ff, 3) == round(100 * dd$mkt_panel, 3), "FF market and panel VW mean equal to three decimals")
+chk(all(pr[sample == "rep", ctrl_t < t & ctrl_t > t - 0.5]), "market control lowers the Newey-West t only slightly")
+chk(ahv("post", "LH", "ah_b") > 0.5 * ahv("rep", "LH", "ah_b") && ahv("post", "LH", "ah_b") < 1.5 * ahv("rep", "LH", "ah_b") &&
+    ahv("post", "BN", "ah_b") < 0 && abs(ahv("post", "LH", "ah_t")) < 1.96, "post-2012: L-H slope of similar size but insignificant, BN slope negative")
+chk(abs(VPW[strategy == "LH" & h == 12 & state == 5, t_ret]) < 1.96, "volatility-preserving t of the L-H state-5 mean not significant")
+oz <- dcast(SCt[dgp == "observed_vol" & test == "null24" & stat %in% c("state5", "d51")], strategy ~ stat, value.var = "rej")
+chk(all(oz$state5 > oz$d51) && all(oz$state5 > 0.075), "baseline bootstrap over-rejects under the observed volatility path, most for the state-5 means")
+nlo <- LOn[!is.na(p_holm)][order(-sharpe)]
+chk(nlo$strategy[1] == "Min-variance" && setequal(nlo$strategy[2:3], c("LowBeta buffer", "LowBeta capped")),
+    "monthly minimum variance has the highest net Sharpe ratio, followed by buffer and capped quintile")
+chk(row_of(LOn, "Min-variance NL")$sharpe <= row_of(LOn, "LowBeta")$sharpe && row_of(LOn, "Min-variance NL")$sharpe > row_of(LOn, "Large-cap VW")$sharpe,
+    "daily NL minimum variance: net Sharpe ratio no higher than Q1, above the benchmark")
+```
+
+```{=latex}
+\begin{abstract}
+```
+Can investors build a robust, implementable strategy on the low-beta anomaly? @gfksw2015 [hereafter GFKSW] argue that it is cyclical: low-beta stocks beat high-beta stocks only when they start out cheap, and value and momentum absorb much of the conditional alpha. Rebuilding their study from CRSP and Compustat, we reproduce their unconditional results almost exactly and the zero-cost portfolio's one-year returns after the extreme valuation states, but not the middle states. The cheap-minus-expensive contrasts are not robustly significant at the 5% level. A bias-corrected predictive regression, which tests a different hypothesis (a linear relation between spread and next-year return), indicates in sample that the spread predicts the beta-neutral portfolio's return ($t$ = `r f2(ahv("rep", "BN", "ah_t"))`). The conditional premium coincides with a value exposure; its four-factor alphas are insignificant under our bootstraps. Since 2013, valuations have never been cheap enough to test the central prediction. For long-only investors, the `r p2(short_share, 0)`% of the zero-cost portfolio's CAPM alpha that comes from shorting high-beta stocks is out of reach: low-beta portfolios cut volatility by about a fifth but do not beat the cap-weighted benchmark significantly (net Sharpe ratio `r f2(row_of(LOn, "LowBeta")$sharpe)` against `r f2(row_of(LOn, "Large-cap VW")$sharpe)`, $p$ = `r pv(row_of(LOn, "LowBeta")$p_sr)`), and the daily nonlinear-shrinkage minimum-variance portfolio has the lowest realized volatility of all portfolios but, after costs, a net Sharpe ratio no higher than the simple low-beta quintile's.
+
+```{=latex}
+\end{abstract}
+
+\newpage
+```
+# Introduction
+
+Since @bjs1972 documented that the security market line is too flat and @black1972 explained it with borrowing restrictions, a large literature has shown that low-risk stocks earn risk-adjusted returns above, and raw returns at least equal to, those of high-risk stocks [@ang2006; @blitz2007; @baker2011; @frazzini2014]. The finding contradicts the most basic prediction of the CAPM and underlies minimum-volatility indices and low-beta funds; whether investors can capture it in a robust, implementable strategy is our question.
+
+@gfksw2015 qualify this evidence on three counts. First, the conventional zero-cost portfolio that is long the lowest-beta and short the highest-beta quintile carries a market beta of about $-1.3$; shorting only a quarter of the high-beta quintile removes most of this exposure. Second, the premium is cyclical: the lowest-risk portfolio outperforms "only when valuation is strongly in its favor" [@gfksw2015, p. 54], that is, when the book-to-price ratio of low-beta stocks is high relative to that of high-beta stocks by historical standards. Third, much of the conditional CAPM alpha disappears once value and momentum are controlled for. They do not propose a timing rule, and their sample ends in December 2012.
+
+We ask whether the valuation dependence of the low-beta premium is a robust feature that an investor can use or an in-sample pattern resting on a few episodes. We answer in three steps: we rebuild GFKSW's study from the raw data and test its central contrast with inference that respects overlapping windows; we follow the strategies to 2024; and we ask what an investor can capture once beta has to be estimated, short sales are restricted, trading costs are paid and performance is judged at daily frequency and over rolling windows.
+
+The paper makes three contributions. First, it separates what replicates from what does not: GFKSW's unconditional results and the one-year returns after the extreme states reproduce, their middle states do not, and, in our reconstruction and simulations, their Newey-West statistics overstate the precision of averages over overlapping windows. The cheap-minus-expensive contrasts are not robustly significant at the 5% level. That of the zero-cost portfolio rests largely on the technology bust and the 2009 rebound, and the conditional premium coincides largely with a value exposure. A bias-corrected predictive regression, testing the different hypothesis of a linear relation between spread and next-year return, finds in sample that the spread predicts the beta-neutral portfolio's return. Second, a CAPM decomposition attributes the negative post-sample excess returns of the zero-cost portfolio mainly to its negative market beta in a rising market, while valuations never reached the states in which GFKSW expect low-beta stocks to win. Third, it quantifies the gap between the academic factor and an investable portfolio: most of the premium comes from the short side, a long-only low-beta portfolio offers lower risk but no significant net Sharpe ratio gain, better beta forecasts bring no significant gain in gross Sharpe ratios, and the daily nonlinear-shrinkage portfolio has the lowest realized volatility but no higher net Sharpe ratio.
+
+Sections 2 and 3 cover literature and methods, Section 4 the replication, Section 5 post-sample performance and timing, Sections 6 to 8 the implementation, and Section 9 concludes.
+
+# Related literature
+
+Risk-based explanations of the low-risk anomaly build on @black1972: investors who cannot or will not borrow tilt towards high-beta stocks, which flattens the security market line [@frazzini2014]. Institutional explanations stress benchmarking: managers measured against a cap-weighted index have little incentive to hold low-beta stocks that raise tracking error [@baker2011]. Low-risk investing works within and across industries [@asness2014], limits to arbitrage concentrate the anomaly in small, illiquid stocks [@li2014], one reason GFKSW restrict attention to large caps, and much of the betting-against-beta premium depends on construction choices such as beta shrinkage and equal weighting [@novymarx2022]. The role of value and momentum relates to the factor models of @fama1993 and @carhart1997 and to the fragility of momentum [@daniel2016]; timing factors with their own valuation spreads has been hard in practice [@asness2017].
+
+For the implementation analyses, @hollstein2019 find that betas from daily returns forecast future betas better than five-year monthly estimates, and @dimson1979 corrects daily betas for non-synchronous trading. Many anomalies do not survive trading costs [@novymarx2016; @denard2022], long-only implementations can be preferable once costs and constraints are considered [@blitz2014], the $1/N$ portfolio is a hard benchmark [@demiguel2009], and shrinkage makes minimum-variance portfolios usable in large cross-sections [@ledoit2004; @clarke2006; @ledoit2020]. Published anomalies weaken after publication [@mclean2016], significance thresholds should rise with the number of tests [@harvey2016], and carefully replicated factors largely survive [@jensen2023].
+
+# Data and methodology
+
+## Data
+
+Monthly and daily returns of US common stocks traded on NYSE, AMEX and NASDAQ come from CRSP via the university's Tidy Finance database [@tidyfinance2023], in CRSP's current (CIZ) format. Holding-period returns come from CRSP's monthly security file, which keeps the month in which a stock delists and includes the delisting return in that month's total return; stocks whose last trading day falls in the formation month are not bought. Every held stock therefore has a return.[^1] GFKSW instead set the delisting return, not the whole month's return, of performance-related delistings to $-30$% (NYSE, AMEX) or $-55$% (NASDAQ), following @shumway1997. In our large-cap universe, a held stock was dropped by its exchange in only `r gfk_rep` stock-months of 1968--2012 (`r gfk_n` over 1929--2024), `r c("none", "one", "two")[gfk_ext + 1]` of them in an extreme beta quintile, so applying their rule leaves the mean low-minus-high return unchanged to within 0.01 basis points (Appendix Table \ref{tab:a1}). In our sample, the delisting treatments tested do not explain differences from their results.
+
+[^1]: Over 1968--2012, delisting months carry on average `r f2(100 * min(dd$q_rep$w_msf), 2)`% to `r f2(100 * max(dd$q_rep$w_msf), 2)`% of a beta quintile's weight, the formation-month exclusions `r f2(100 * min(dd$q_rep$w_excl), 2)`% to `r f2(100 * max(dd$q_rep$w_excl), 2)`%. Dropping the delisting months instead changes the mean low-minus-high return by `r f2(1e4 * abs(im("rep", "v3", "lh") - im("rep", "v2", "lh")), 2)` basis points per month (Appendix Table \ref{tab:a1}).
+
+Book equity follows @fama1992 and uses only December fiscal year-ends with at least two years of Compustat history, as in GFKSW; before Compustat coverage we use the book equity of @davis2000, GFKSW's source for the years before 1951. Factors and the one-month T-bill rate are from Kenneth French's data library [@frenchlib]; GFKSW use three-month T-bills. Instead of the CRSP value-weighted index, we use the Fama--French market total return (MKT--RF + RF), whose mean over 1968--2012 matches our panel's value-weighted return (both `r f2(100 * dd$mkt_ff, 3)`% per month; correlation `r f2(dd$mkt_cor, 3)`). Regressions use the market excess return, MKT--RF. The momentum factor ends in December 2024, which ends every sample. Daily betas use CRSP's daily returns; the daily portfolio paths of Section 8 also use the delisting-day records of CRSP's daily file. GFKSW used the CRSP vintage of 2013, whose effect cannot be quantified here. Appendix Table \ref{tab:a0} compares the two designs.
+
+## Portfolios and return definitions
+
+At the end of each month $t$, each stock's CAPM beta is estimated from its excess returns over the previous 60 months (at least 24, including month $t$). The universe consists of stocks priced between USD 2 and USD 1,000 with a market capitalisation above the 67th percentile of NYSE stocks, on average `r f2(res$meta$n_large_rep, 0)` stocks per month in 1968--2012. Stocks are sorted into beta quintiles and held, value-weighted, over month $t+1$; all portfolios are rebalanced monthly unless stated otherwise.
+
+All returns are total returns in USD; the excess return of a portfolio is its return minus the one-month T-bill rate $r_f$, and its active return is its return minus that of a benchmark. The low-minus-high portfolio (L--H) holds the investor's capital as collateral in T-bills and is long USD 1 of quintile 1 for every USD 1 of quintile 5 sold short, the short proceeds financing the long position. Its total return is $r_f + r_{Q1} - r_{Q5}$ and its excess return $r_{Q1} - r_{Q5}$. GFKSW's beta-neutral portfolio (BN) invests the capital in quintile 1 and shorts quintile 5 in an amount of 25% of capital, with the short proceeds in T-bills. Its total return is $r_{Q1} - 0.25\,r_{Q5} + 0.25\,r_f$ and its excess return $(r_{Q1} - r_f) - 0.25\,(r_{Q5} - r_f) = r_{Q1} - 0.25\,r_{Q5} - 0.75\,r_f$; the $0.75\,r_f$ term is the opportunity cost of the fully invested long position net of the interest on the short proceeds. Like GFKSW (their note 6), Table \ref{tab:t1} reports the raw return $r_{Q1} - 0.25\,r_{Q5}$ and computes Sharpe ratios from excess returns. These gross returns ignore lending fees and the spread between the rebate on short proceeds and the T-bill rate; net returns are defined in Section 3.4. The fixed short ratio of 25% matches GFKSW's full-sample average betas and therefore uses future information; we also reset it every month to $\hat\beta_{Q1,t}/\hat\beta_{Q5,t}$ (BN ex ante) and, as @frazzini2014 do, to the same ratio with betas shrunk towards one, $0.6\hat\beta + 0.4$ (BN shrunk).
+
+For horizons of $h$ months we compound the monthly excess returns of the monthly rebalanced strategy, $\prod_{k=1}^{h}(1+x_{t+k})-1$, and annualise geometrically. This compounds monthly excess returns and is distinct from the total-return wealth paths in @fig-cum; GFKSW rebalance monthly (their notes 9 and 10) but do not state how they compound. Relative wealth of two buy-and-hold portfolios and the payoff of a never-rebalanced long-short position answer different questions (Appendix Table \ref{tab:a2}).
+
+## Valuation states and inference
+
+The B/P spread is the average book-to-price ratio of quintile 1 minus that of quintile 5, with December book equity of year $y-1$ used from the end of June of year $y$ and market value measured at the end of the formation month [@asness2013]. The higher the spread, the cheaper low-beta stocks are relative to high-beta stocks; because the spread is positive in most months, "cheap" and "expensive" below always mean relative to the spread's own history. GFKSW "deleted the top and bottom 0.5% of the B/P observations" but report 540 months with 108 per state; we therefore read the trimming as applying to stock-level ratios, not months, and trim each month's cross-section of large-cap B/P ratios at the 0.5th and 99.5th percentiles, which uses no future information. The 540 formation months from December 1967 to November 2012 (return months January 1968 to December 2012) are sorted into spread quintiles ("states"): state 5 is the cheapest fifth for low-beta stocks, state 1 the most expensive. As in GFKSW, these breakpoints use the whole sample; Section 5 also uses breakpoints estimated in real time. Only windows that end by December 2012 enter the replication (state 1 keeps `r n_win[h == 12, n]` of 108 windows at one year and `r n_win[h == 60, n]` at five years).
+
+Tables \ref{tab:t2bc} and \ref{tab:t3} average, for every state, a statistic computed over the $h$ months after each formation month: the annualised chained excess return, or the intercept of a CAPM or four-factor regression. Where we replicate GFKSW's tables we also report their statistic as we read it, a Newey-West $t$ with $h$ lags on the state-filtered sequence of window estimates. Overlapping windows and states that cluster in a few episodes make that sequence strongly dependent. Our baseline is therefore a block bootstrap. We cut the monthly history of strategy and factor returns into blocks of `r res$boot_info$block` months, draw blocks with replacement, wrapping around the end of the sample [@kunsch1989; @politis1992], keep the dates of the valuation signals fixed and recompute every state average (`r res$boot_info$B` draws). Because the reshuffled returns are unrelated to the signals, the draws show how far apart the state averages fall by chance when the states carry no information; their standard deviation gives the $t$-statistics and their centred quantiles the $p$-values, not confidence intervals. Blocks of 24 months lie between the `r f2(DEP[strategy == "LH", pw_block], 0)` months that the rule of [@politis2004; corrected by @patton2009] selects for the mean of the L--H returns and the `r f2(DEP[strategy == "LH", pw_block_sq], 0)` months it selects for their squares; Appendix Table \ref{tab:inf} reports blocks of 12 to 60 months.
+
+The bootstrap assumes that volatility is unrelated to the signal dates, which fails here: in the year after a state-5 month the L--H volatility averages `r p2(sv("LH", 5), 0)`% per year, against `r p2(min(SV[strategy == "LH" & state < 5, realised]), 0)`% to `r p2(max(SV[strategy == "LH" & state < 5, realised]), 0)`% after the other states. A volatility-preserving variant therefore rescales the reshuffled, standardised returns with the local volatility of the original dates. Size simulations with the actual state calendar (Appendix Table \ref{tab:size}) show that the 24-month bootstrap rejects a true null at the 5% level in `r f2(rej_rng("null24", c("state5", "d51"))[1], 1)`% to `r f2(rej_rng("null24", c("state5", "d51"))[2], 1)`% of the samples when volatility is unrelated to the calendar, the GFKSW-style statistic in `r f2(rej_rng("gfksw_nw", "state5")[1], 1)`% to `r f2(rej_rng("gfksw_nw", "state5")[2], 1)`%. Under the observed volatility path the baseline bootstrap over-rejects, most for the state-5 means (Appendix Table \ref{tab:size}); for the L--H contrast its size-adjusted 5% critical value is `r f2(sct("LH", "observed_vol", "null24", "d51", "crit95"))`, that of the volatility-preserving variant `r f2(sct("LH", "observed_vol", "vp24", "d51", "crit95"))`. No procedure can overcome the small number of episodes. Calendar-time regressions on stacked windows estimate a different quantity and are reported in Appendix Table \ref{tab:a5}.
+
+A predictive regression of the next year's return on the standardised spread avoids classifying months into states. The spread is persistent and its innovations correlate with returns, inducing small-sample OLS bias [@stambaugh1999]; we therefore report the reduced-bias estimator of @amihud2004 on non-overlapping December observations.
+
+The extensions use Newey-West $t$-statistics with the rule-of-thumb lag $\lfloor 4(T/100)^{2/9}\rfloor$ [@newey1987]. Sharpe ratios are compared with the HAC test of @ledoit2008 on the common sample, beta forecasts with Diebold-Mariano tests, and within each family of comparisons with a common benchmark we report Holm-adjusted $p$-values [@harvey2016]. Three analyses are primary: the replication, the performance after 2012, and the comparison of the long-only low-beta quintile with the cap-weighted benchmark after costs (one test, unadjusted). Everything else is exploratory.
+
+## Costs, turnover and liquidity
+
+Turnover at a rebalancing date is $\sum_i |w_{i,t} - \tilde w_{i,t}|$, where $\tilde w$ are the previous target weights after drifting with returns over the holding period. It counts purchases and sales, so a one-way cost $c$ per dollar traded is charged as $c$ times turnover; a stock that delisted during the month counts as a sale. Every portfolio, including each benchmark, bears costs on its own turnover. The base case of $c = 10$ basis points is the flat cost used by @denard2022 and twice the cost they assume for large caps; because we have no transaction-level data, 0 to 50 basis points are reported as scenarios. Short positions pay a lending fee of 25 basis points per year on the short notional, the value-weighted borrowing cost of the loan portfolio studied by @davolio2002 (17 basis points for the 91% of lent stocks that are cheap to borrow); this, too, is a scenario value, not calibrated to our sample. The cost model ignores market impact, financing spreads and the possibility that a stock cannot be borrowed. CRSP reports trading volume, which we use only to describe the liquidity of each portfolio (Section 7); we have no data on market impact or borrowing availability.
+
+# Replication
+
+## Risk, return and the construction of the long-short portfolio
+
+```{r}
+#| label: tab-t1
+t1 <- copy(T1)[strategy != "Beta neutral (ex ante)"]
+t1 <- merge(t1, gfk_t1, by = "strategy", suffixes = c("", "_p"), sort = FALSE)
+ord <- c("Q1","Q2","Q3","Q4","Q5","Low - high","Beta neutral","Market")
+t1 <- t1[match(ord, strategy)]
+lab <- c("1 (low)", "2", "3", "4", "5 (high)", "Low -- high", "Beta neutral", "Market")
+tst <- ifelse(t1$strategy %in% c("Low - high", "Beta neutral", "Market"), paste0(" (", f2(t1$t), ")"), "")
+df <- data.frame(Portfolio = lab,
+  a = paste0(f2(100 * t1$arith), tst), ap = f2(t1$arith_p),
+  g = f2(100 * t1$geo), gp = f2(t1$geo_p),
+  b = f2(t1$beta_ante), bp = f2(t1$beta), br = f2(t1$beta_real),
+  s = f2(t1$sharpe), sp = f2(t1$sharpe_p))
+names(df) <- c("Beta quintile", "Ours", "GFKSW", "Ours", "GFKSW", "Ours", "GFKSW", "Realised", "Ours", "GFKSW")
+tab(df, "Risk and return of beta-sorted portfolios, January 1968 to December 2012 (replication of GFKSW Table 1)", "t1",
+    notes = paste0("Value-weighted monthly raw returns in percent of large-cap stocks sorted on 60-month CAPM betas; ",
+      "ordinary t-statistics in parentheses, as in GFKSW. Beta: average pre-formation beta; Realised: slope of the portfolio's monthly ",
+      "excess return on the market excess return. Sharpe ratios are annualised and use excess returns ",
+      "(L--H: $r_{Q1}-r_{Q5}$; beta neutral: $r_{Q1}-0.25\\\\,r_{Q5}-0.75\\\\,r_f$). The beta-neutral mean is the raw return ",
+      "$r_{Q1}-0.25\\\\,r_{Q5}$. 540 months; GFKSW values from their Table 1."),
+    align = "lrrrrrrrrr", fs = 8, header = c(" " = 1, "Arithmetic mean" = 2, "Geometric mean" = 2, "Beta" = 3, "Sharpe ratio" = 2))
+```
+
+Against the published values (Table \ref{tab:t1}), the average absolute difference in arithmetic means across the eight portfolios is `r f2(gap_bp, 1)` basis points per month, the pre-formation betas differ by at most `r f2(gap_beta, 2)` and the Sharpe ratios by at most `r f2(gap_sr, 2)`, and the $t$-statistics of the two long-short portfolios (`r f2(q(T1, "Low - high", "t"))` and `r f2(q(T1, "Beta neutral", "t"))`) are close to GFKSW's 0.63 and 5.49. Average returns are flat across the first four quintiles and fall in the highest-beta quintile, while Sharpe ratios fall from `r f2(q(T1, "Q1", "sharpe"))` to `r f2(q(T1, "Q5", "sharpe"))`. The L--H portfolio's mean excess return is `r f2(100 * q(T1, "Low - high", "arith"))`% per month and statistically insignificant; its market beta is `r f2(q(T1, "Low - high", "beta_ante"))` ex ante and `r f2(q(T1, "Low - high", "beta_real"))` ex post. The beta-neutral portfolio earns `r f2(100 * pf("rep", "BN", "mean_ex") / 12)`% per month in excess of T-bills ($t$ = `r f2(pf("rep", "BN", "t_ex"))`, Table \ref{tab:post}), the number comparable with L--H; the raw return of `r f2(100 * q(T1, "Beta neutral", "arith"))`% and its $t$ of `r f2(q(T1, "Beta neutral", "t"))`, which Table \ref{tab:t1} reports to match GFKSW, also contain three quarters of the T-bill return.
+
+Neither portfolio is what its name suggests. Ex post, the quintile betas are compressed towards one, from `r f2(q(T1, "Q1", "beta_ante"))` to `r f2(q(T1, "Q1", "beta_real"))` for quintile 1 and from `r f2(q(T1, "Q5", "beta_ante"))` to `r f2(q(T1, "Q5", "beta_real"))` for quintile 5, as estimation error and mean reversion in beta imply. The beta-neutral portfolio therefore has a realised beta of `r f2(q(T1, "Beta neutral", "beta_real"))` (Newey-West standard error `r f2(q(T1, "Beta neutral", "beta_real_se"))`), and part of its return is ordinary equity premium. Shrinking the betas towards one before setting the short ratio, as @frazzini2014 do, raises the short position to `r f2(100 * mean(s[in_p(mid, cfg$rep), s_shr]), 0)`% of capital on average and lowers the realised beta to `r f2(pf("rep", "BNs", "beta"))` (1968--2024: `r f2(pf("full", "BNs", "beta"))`, Appendix Table \ref{tab:ls}). Restricting the universe to firms with a December book value barely changes the extreme quintiles and the long-short portfolios of Table \ref{tab:t1}, although it reorders the mean returns of the middle quintiles (Appendix Table \ref{tab:a4}).
+
+```{r}
+#| label: fig-cum
+#| fig-cap: "Cumulative growth of USD 1 (log scale), January 1968 to December 2024, from monthly gross total returns, plotted at the end of each return month. Panel (a): value-weighted lowest- and highest-beta quintiles of the large-cap universe and the Fama-French market. Panel (b): the low-minus-high portfolio (capital in T-bills, long Q1 and short Q5: $r_f + r_{Q1} - r_{Q5}$), the beta-neutral portfolio ($r_{Q1} - 0.25\\,r_{Q5} + 0.25\\,r_f$), the market and T-bills. Dashed vertical line: end of the GFKSW sample (December 2012)."
+#| fig-height: 2.5
+#| fig-width: 7
+x <- s[in_p(mid, cfg$full)]
+a <- melt(x[, .(mid, "Low beta (Q1)" = ret1, "High beta (Q5)" = ret5, "Market" = mkt + rf)], id.vars = "mid")
+a[, w := cumprod(1 + value), by = variable][, date := eom(mid)]
+b <- melt(x[, .(mid, "Low - high" = LH + rf, "Beta neutral" = BN + rf, "Market" = mkt + rf, "T-bills" = rf)], id.vars = "mid")
+b[, w := cumprod(1 + value), by = variable][, date := eom(mid)]
+g1 <- ggplot(a, aes(date, w, colour = variable, linetype = variable)) + geom_line(linewidth = 0.45) +
+  scale_y_log10(breaks = log_breaks, labels = as.character(log_breaks)) +
+  scale_colour_manual(values = c(pal[1], pal[2], pal[5])) + scale_linetype_manual(values = c("solid", "solid", "dashed")) +
+  geom_vline(xintercept = as.Date("2012-12-31"), linetype = "dashed", linewidth = 0.3) +
+  labs(title = "(a) Low- and high-beta quintiles", x = NULL, y = "Growth of USD 1") + theme_paper +
+  guides(colour = guide_legend(nrow = 1), linetype = guide_legend(nrow = 1))
+g2 <- ggplot(b, aes(date, w, colour = variable, linetype = variable)) + geom_line(linewidth = 0.45) +
+  scale_y_log10(breaks = log_breaks, labels = as.character(log_breaks)) +
+  scale_colour_manual(values = c(pal[3], pal[4], pal[5], "grey60")) + scale_linetype_manual(values = c("solid", "solid", "dashed", "dotted")) +
+  geom_vline(xintercept = as.Date("2012-12-31"), linetype = "dashed", linewidth = 0.3) +
+  labs(title = "(b) Long-short constructions", x = NULL, y = NULL) + theme_paper +
+  guides(colour = guide_legend(nrow = 1), linetype = guide_legend(nrow = 1))
+print(patchwork::wrap_plots(g1, g2, ncol = 2))
+tw <- local({ xx <- copy(x); function(col, add_rf = FALSE) xx[, prod(1 + get(col) + if (add_rf) rf else 0)] })   # terminal wealth of USD 1, 1968-2024
+chk(tw("LH", TRUE) < tw("rf") && LS[1, a1_g] > 0, "L-H ends below T-bills despite a positive CAPM alpha")
+```
+
+@fig-cum shows how the construction shapes realised wealth. One dollar invested in January 1968 grew to `r f2(tw("ret1"), 0)` dollars in the low-beta quintile, `r f2(tw("ret5"), 0)` in the high-beta quintile and `r f2(tw("mkt", TRUE), 0)` in the market by December 2024. The dollar-neutral L--H portfolio ended at `r f2(tw("LH", TRUE), 1)` dollars, below the `r f2(tw("rf"), 1)` of T-bills; the beta-neutral portfolio ended at `r f2(tw("BN", TRUE), 0)` dollars. Appendix Table \ref{tab:ls} reports their mean excess returns and CAPM decompositions.
+
+## Valuation cycles
+
+```{r}
+#| label: spread-facts
+neg_years <- s[spread < 0 & fmid >= ym(1967L, 12L), unique(fmid %/% 12L)]
+chk(any(neg_years %in% 1970:1974) && any(neg_years %in% 2008:2012), "spread negative in the early 1970s and from 2008")
+r30 <- s[fmid %/% 12L %in% 1930:1939, median(bp5 / bp1)]
+chk(r30 > 2, "1930s: high-beta B/P more than twice low-beta B/P")
+pct_end12 <- mean(sp_rep$spread <= end12)
+chk(end12 < 0 && pct_end12 < 0.1, "December 2012 spread negative and in the lowest decile of 1968-2012")
+```
+
+@fig-spread shows the valuation cycle that defines GFKSW's states (their Figures 3 and 5). The spread is positive in `r p2(mean(sp_rep$spread > 0), 0)`% of the 540 formation months between December 1967 and November 2012, so high-beta stocks normally trade at a valuation premium. The spread was negative in the early 1970s and, from 2008 onwards, in most months of the following decade. Its largest reversal occurred during the Great Depression: in the median month of the 1930s, the average B/P ratio of high-beta stocks was `r f2(r30, 1)` times that of low-beta stocks (Appendix @fig-bp). At the end of December 2012, when GFKSW's sample ends, the spread stood at `r f2(end12)`, at the `r f2(100 * pct_end12, 0)`th percentile of the 540 formation months of their sample, and it has stayed below the upper two breakpoints since. The cheapest states for low-beta stocks occurred mainly in 1978--1981, 1988 and 1999--2000, the most expensive ones in 1970--1974 and 2005--2012.
+
+```{r}
+#| label: fig-spread
+#| fig-cap: "B/P spread of the beta quintiles (average book-to-price ratio of the low-beta minus that of the high-beta quintile; stock-level B/P trimmed cross-sectionally at 0.5% in each tail), measured at the end of each formation month from December 1967 to November 2024. Dotted horizontal lines: breakpoints between the five valuation states, estimated over the GFKSW formation months (state 1 below the lowest line, state 5 above the highest). Dashed vertical lines: first and last formation month of the GFKSW sample (December 1967, November 2012). Shaded: NBER recessions. The B/P levels since 1929 are shown in @fig-bp."
+#| fig-height: 2.5
+#| fig-width: 7
+x <- s[fmid >= ym(1967L, 12L) & mid <= cfg$full[2]][, date := eom(fmid)]
+A_ <- A[order(state)]; brk <- (A_$to[1:4] + A_$from[2:5]) / 2
+ylab_ <- c(brk[1] - 0.07, (brk[1:3] + brk[2:4]) / 2, brk[4] + 0.07)
+ggplot(x, aes(date, spread)) +
+  geom_rect(data = nber[start > as.Date("1968-01-01")], aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf), inherit.aes = FALSE, fill = "grey85", alpha = 0.6) +
+  geom_hline(yintercept = 0, linewidth = 0.3) + geom_hline(yintercept = brk, linetype = "dotted", linewidth = 0.35, colour = "grey30") +
+  geom_vline(xintercept = c(eom(ym(1967L, 12L)), eom(ym(2012L, 11L))), linetype = "dashed", linewidth = 0.3) +
+  geom_line(linewidth = 0.4, colour = "grey15") + labs(x = NULL, y = "B/P spread (Q1 - Q5)") + theme_paper +
+  annotate("text", x = eom(ym(2025L, 6L)), y = ylab_, label = 1:5, size = 2.2, colour = "grey30", hjust = 0) +
+  annotate("text", x = eom(ym(2025L, 6L)), y = brk[4] + 0.17, label = "state", size = 2.2, colour = "grey30", hjust = 0) +
+  scale_x_date(expand = expansion(mult = c(0.01, 0.06)))
+```
+
+```{r}
+#| label: tab-t2bc
+mk <- function(stg) {
+  z <- B[strategy == stg][order(state)]
+  e <- as.data.frame(lapply(z[, c("12", "24", "36", "48", "60")], function(v) f2(100 * v)))
+  tt <- B2[strategy == stg & h == 12][order(state)]
+  tv <- VPW[strategy == stg & h == 12][order(state)]
+  p <- as.data.frame(apply(gB[[stg]], 2, function(v) paste0("[", f2(v), "]")))
+  cbind(State = states_lab, e, tt = f2(tt$t_boot), tv = f2(tv$t_ret), p[, c(1, 5)])
+}
+pB <- rbind(mk("LH"), mk("BN"))
+names(pB) <- c("State", "12", "24", "36", "48", "60", "Baseline", "Vol.-pres.", "12", "60")
+kbl(pB, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrrrr",
+    caption = "Annualised future cumulative excess returns by initial B/P spread state, 1968--2012 (GFKSW Table 2, Panels B and C)",
+    label = "t2bc") |>
+  kable_styling(latex_options = "hold_position", font_size = 8) |>
+  add_header_above(c(" " = 1, "Horizon (months)" = 5, "12 months" = 2, "Horizon" = 2), escape = FALSE) |>
+  add_header_above(c(" " = 1, "This replication (\\\\%)" = 5, "Bootstrap $t$" = 2, "GFKSW (\\\\%)" = 2), escape = FALSE) |>
+  pack_rows("Panel A: low-minus-high (L--H)", 1, 5, bold = FALSE, italic = TRUE) |>
+  pack_rows("Panel B: beta neutral (BN)", 6, 10, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("State cut-offs (B/P spread): ", paste(f2(A[order(state)]$to[1:4]), collapse = ", "), " (GFKSW: $-$0.01, 0.12, 0.22, 0.27; Appendix Table \\\\ref{tab:t2}). For every formation month, the strategy's monthly excess returns over the next $h$ ",
+    "months are compounded and annualised; the table averages them by state. Windows end by December 2012. Bootstrap $t$: one-year mean divided by ",
+    "the standard deviation of a circular block bootstrap of monthly returns (24-month blocks, ", res$boot_info$B, " draws) with the state calendar held fixed ",
+    "(baseline) and of its volatility-preserving variant (Section 3.3); it tests whether the state average differs from zero. Published GFKSW values in brackets."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+Table \ref{tab:t2bc} reproduces GFKSW's pattern at the extremes. When low-beta stocks start cheapest (state 5), L--H earns `r p2(b12("LH", 5), 1)`% over the following year (GFKSW: 12.52%); when they start most expensive (state 1), `r p2(b12("LH", 1), 1)`% (GFKSW: $-5.80$%). The beta-neutral portfolio earns `r p2(b12("BN", 5), 1)`% after state 5 (GFKSW: 10.27%), but only `r p2(b12("BN", 1), 1)`% after state 1 (GFKSW: 2.30%), and unlike GFKSW's, its average return is negative at two and three years after state 2. The middle states do not replicate. Our state cut-offs lie above GFKSW's (`r paste(f2(A[order(state)]$to[1:4]), collapse = ", ")` against $-0.01$, 0.12, 0.22, 0.27), the next-month L--H return has the opposite sign in states 2 to 4 (Appendix Table \ref{tab:t2}), and the one-year returns in states 3 and 4 are `r p2(b12("LH", 3), 1)`% and `r p2(b12("LH", 4), 1)`% against $-6.84$% and $+3.36$%. Because the middle states span narrow ranges of the spread, their classification is fragile: with calendar-year instead of June-lagged book equity `r p2(1 - agree_fy, 0)`% of the months change state, with value-weighted instead of equal-weighted B/P averages `r p2(1 - agree_vw, 0)`%. Yet the one-year L--H returns of states 2 to 4 move by at most `r f2(100 * mid_shift, 1)` percentage points across these and three trimming variants, and no variant reproduces GFKSW's middle states (Appendix Table \ref{tab:a2}).
+
+These estimates are imprecise. With the baseline bootstrap the one-year means are significant only in state 5 for L--H and in states 4 and 5 for BN, but this bootstrap over-rejects for the state-5 means when volatility follows its observed path, and with the volatility-preserving bootstrap the state-5 mean of L--H is not significant ($t$ = `r f2(VPW[strategy == "LH" & h == 12 & state == 5, t_ret])`); the bootstrap standard errors of the one-year L--H means are `r f2(min(se_lh), 1)` to `r f2(max(se_lh), 1)` percentage points. The contrast that carries GFKSW's argument, state 5 minus state 1, is `r f2(100 * d51("LH"), 1)` percentage points per year for L--H ($t$ = `r f2(d51("LH", "t_d_ret"))`, $p$ = `r pv(bc("LH", "null", 24L, "p_null"))`) and `r f2(100 * d51("BN"), 1)` points for BN ($t$ = `r f2(d51("BN", "t_d_ret"))`, $p$ = `r pv(bc("BN", "null", 24L, "p_null"))`). The cheap-minus-expensive contrasts are not robustly significant at the 5% level (Appendix Tables \ref{tab:inf} and \ref{tab:size}): across block lengths of 12 to 60 months the L--H $t$-statistic ranges from `r f2(t_rng("LH")[1])` to `r f2(t_rng("LH")[2])`; the volatility-preserving bootstrap gives `r f2(bc("LH", "vp", 24L, "t"))` (BN: `r f2(bc("BN", "vp", 24L, "t"))`); and under the observed volatility path a 5% test needs $|t|$ above `r f2(sct("LH", "observed_vol", "null24", "d51", "crit95"))` for L--H and `r f2(sct("BN", "observed_vol", "null24", "d51", "crit95"))` for BN. At three and five years the L--H contrast is `r f2(100 * d51("LH", "d_ret", 36), 1)` and `r f2(100 * d51("LH", "d_ret", 60), 1)` points per year and far from significant. The contrast also rests on one decade: state-5 months in `r paste(range(yrs5_2000), collapse = "--")` were followed by the collapse of the technology bubble (L--H: `r p2(lh_after(yrs5_2000, 5), 0)`% in the following year), state-1 months in 2008--2009 by the rebound of high-beta stocks (`r p2(lh_after(2008:2009, 1), 0)`%), and without the formation months of the 2000s the contrast falls to `r f2(100 * ld(2000L, "lh12"), 1)` points (Appendix Table \ref{tab:a6}).
+
+A predictive regression avoids the classification step and tests a different hypothesis: a linear relation between the spread and the next-year return across all months, not a difference between the returns after the two extreme states. A one-standard-deviation higher spread predicts a `r p2(pr[sample == "rep" & strategy == "LH", slope], 1)` percentage points higher L--H return over the next 12 months ($t$ = `r f2(pr[sample == "rep" & strategy == "LH", t])`, Newey-West with 12 lags) and a `r p2(pr[sample == "rep" & strategy == "BN", slope], 1)` points higher BN return ($t$ = `r f2(pr[sample == "rep" & strategy == "BN", t])`). The spread is persistent (annual autocorrelation `r f2(ahv("rep", "LH", "ah_rho"))`) and its innovations are negatively correlated with the returns, so on the `r ahv("rep", "LH", "ah_n")` non-overlapping December observations we correct for the Stambaugh bias: the reduced-bias $t$-statistics are `r f2(ahv("rep", "LH", "ah_t"))` for L--H and `r f2(ahv("rep", "BN", "ah_t"))` for BN. Controlling for the market's excess return over the preceding year, which is positively correlated with the spread (`r f2(pr[sample == "rep" & strategy == "LH", cor_spread_mkt12])`), lowers the spread's Newey-West $t$-statistics only slightly, from `r f2(pr[sample == "rep" & strategy == "LH", t])` and `r f2(pr[sample == "rep" & strategy == "BN", t])` to `r f2(pr[sample == "rep" & strategy == "LH", ctrl_t])` and `r f2(pr[sample == "rep" & strategy == "BN", ctrl_t])`. In sample, the valuation signal therefore predicts the return of the beta-neutral portfolio significantly, whereas for the zero-cost portfolio it is not significant once the bias is corrected.
+
+## Value and momentum exposures
+
+```{r}
+#| label: tab-t3
+mk3 <- function(stg) {
+  z <- W[strategy == stg & h %in% c(12, 60)][order(state, h)]
+  e <- dcast(z, state ~ h, value.var = c("a_capm", "a_4f")); tb_ <- dcast(z, state ~ h, value.var = c("t_boot_capm", "t_boot_4f"))
+  g <- gfk3[[stg]]
+  est <- data.frame(c1 = f2(100 * e$a_capm_12), g1 = f2(g$capm[, "a12"]), c2 = f2(100 * e$a_capm_60), g2 = f2(g$capm[, "a60"]),
+                    c3 = f2(100 * e$a_4f_12), g3 = f2(g$f4[, "a12"]), c4 = f2(100 * e$a_4f_60), g4 = f2(g$f4[, "a60"]))
+  tst <- data.frame(c1 = f2(tb_$t_boot_capm_12), g1 = f2(g$capm[, "t12"]), c2 = f2(tb_$t_boot_capm_60), g2 = f2(g$capm[, "t60"]),
+                    c3 = f2(tb_$t_boot_4f_12), g3 = f2(g$f4[, "t12"]), c4 = f2(tb_$t_boot_4f_60), g4 = f2(g$f4[, "t60"]))
+  interleave(est, tst, states_lab)
+}
+t3 <- rbind(mk3("LH"), mk3("BN"))
+hm <- function(stg) { z <- W[strategy == stg & h == 12][order(state)]; paste0(f2(z$b_hml), " / ", f2(z$b_mom)) }
+t3$hm <- ""; t3$hm[seq(1, 10, 2)] <- hm("LH"); t3$hm[seq(11, 20, 2)] <- hm("BN")
+names(t3) <- c("State", "Ours", "GFKSW", "Ours", "GFKSW", "Ours", "GFKSW", "Ours", "GFKSW", "HML / MOM")
+kbl(t3, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrrrr",
+    caption = "Conditional alphas by initial B/P spread state, 1968--2012 (GFKSW Table 3)", label = "t3") |>
+  kable_styling(latex_options = "hold_position", font_size = 7.5) |>
+  add_header_above(c(" " = 1, "12 months" = 2, "60 months" = 2, "12 months" = 2, "60 months" = 2, "12 months" = 1)) |>
+  add_header_above(c(" " = 1, "CAPM alpha" = 4, "Four-factor alpha" = 4, "Loadings" = 1)) |>
+  pack_rows("Panel A: low-minus-high (L--H)", 1, 10, bold = FALSE, italic = TRUE) |>
+  pack_rows("Panel B: beta neutral (BN)", 11, 20, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("Alphas in percent per month. For every formation month the strategy's excess returns over the next 12 or 60 months are ",
+    "regressed on the market or on MKT, SMB, HML and MOM, and the intercepts are averaged by state. In parentheses: for our estimates the bootstrap ",
+    "t-statistic (as in Table \\\\ref{tab:t2bc}); for GFKSW their published Newey-West t-statistic. Our GFKSW-style statistics are in Appendix ",
+    "Table \\\\ref{tab:gfkt}. HML / MOM: average four-factor loadings over 12-month windows."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+Table \ref{tab:t3} replicates GFKSW's attribution. In state 5 the L--H portfolio has a CAPM alpha of `r f2(100 * w_("LH", 5, 12, "a_capm"))`% per month over the following year against GFKSW's 1.04%, and its GFKSW-style $t$-statistic is `r f2(w_("LH", 5, 12, "t_gfk_capm"))` against their 5.11, so even our reading of their procedure does not reproduce their precision. Adding SMB, HML and MOM lowers the alpha to `r f2(100 * w_("LH", 5, 12, "a_4f"))`% (GFKSW: 0.40%), while the HML loading of L--H rises from `r f2(w_("LH", 1, 12, "b_hml"))` in state 1 to `r f2(w_("LH", 5, 12, "b_hml"))` in state 5 and the MOM loading from `r f2(w_("LH", 1, 12, "b_mom"))` to `r f2(w_("LH", 5, 12, "b_mom"))`, the pattern of GFKSW's Table 4 (Appendix Table \ref{tab:a3}; rolling correlations in Appendix @fig-cor). The loadings show a value exposure of the cheap-state premium, not a full explanation: when low-beta stocks are cheap relative to high-beta stocks, a portfolio long low-beta and short high-beta stocks is long value.
+
+With the baseline bootstrap, no four-factor alpha is significant at any of the five horizons from 12 to 60 months (largest $|t|$ = `r f2(max(abs(W$t_boot_4f)))`), whereas the state-5 CAPM alphas are significant at every horizon for both portfolios with this bootstrap, which over-rejects here. The volatility-preserving bootstrap keeps them significant only at `r andlist(vp_sig_h("LH"))` months for L--H and `r andlist(vp_sig_h("BN"))` months for BN, not over the first year (L--H: $t$ = `r f2(vpw("LH", 5, 12, "t_capm"))`). The state-5 CAPM alpha of L--H also comes largely from windows that start in the 1980s: without them it falls from `r f2(100 * ld(NA, "a5_lh"))`% to `r f2(100 * ld(1980L, "a5_lh"))`% per month. With book equity from @davis2000, the 1930--2012 sample shows the same ordering of the extreme states at every horizon, but after the cheapest state L--H gains only in the first two years (Appendix Table \ref{tab:t5}).
+
+# Post-sample performance and valuation timing
+
+```{r}
+#| label: tab-post
+lab6 <- c(Q1 = "Low beta (Q1)", Q5 = "High beta (Q5)", LH = "Low -- high", BN = "Beta neutral (25\\%)", BNd = "Beta neutral (ex ante)", MKT = "Market")
+mk6 <- function(per) {
+  z <- pp[period == per][match(names(lab6), portfolio)]
+  isM <- z$portfolio == "MKT"
+  data.frame(P = unname(lab6), m = f2(100 * z$mean_ex, 1), t = f2(z$t_ex), sr = f2(z$sharpe), b = f2(z$beta),
+             a1 = ifelse(isM, "--", f2(100 * z$a_capm, 1)), t1 = ifelse(isM, "", f2(z$t_capm)),
+             a4 = ifelse(isM, "--", f2(100 * z$a_4f, 1)), t4 = ifelse(isM, "", f2(z$t_4f)))
+}
+df <- rbind(mk6("rep"), mk6("post"), mk6("pub"))
+names(df) <- c("Portfolio", "Excess (\\%)", "$t$", "Sharpe", "Beta", "CAPM $\\alpha$ (\\%)", "$t$", "4F $\\alpha$ (\\%)", "$t$")
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrrr",
+    caption = "Performance in GFKSW's sample, after its end and after publication", label = "post") |>
+  kable_styling(latex_options = "hold_position", font_size = 8) |>
+  pack_rows("Panel A: GFKSW sample, 1968--2012 (540 months)", 1, 6, bold = FALSE, italic = TRUE) |>
+  pack_rows("Panel B: after the original sample end, 2013--2024 (144 months)", 7, 12, bold = FALSE, italic = TRUE) |>
+  pack_rows("Panel C: after publication, 2016--2024 (108 months)", 13, 18, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("Annualised mean excess returns, Sharpe ratios, realised market betas and annualised CAPM and four-factor alphas. ",
+    "Newey-West t-statistics with $\\\\lfloor 4(T/100)^{2/9}\\\\rfloor$ lags (", nw_l(540), " in Panel A, ", nw_l(144), " in Panel B, ",
+    nw_l(108), " in Panel C)."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+GFKSW's sample ends in December 2012 and their article appeared in mid-2015, so 2013--2024 lies after the original sample end, and only 2016--2024 after publication. Neither period is an untouched out-of-sample test for us, since the data existed before we specified anything. Classified with the 1968--2012 breakpoints, `r cnt("post", 1)` of the 144 post-sample formation months fall into state 1, `r cnt("post", 2)` into state 2, `r cnt("post", 3)` into state 3 and none into states 4 or 5 (after publication: `r cnt("pub", 1)`, `r cnt("pub", 2)` and `r cnt("pub", 3)`). The period therefore cannot test GFKSW's central prediction, that low-beta stocks win after starting cheap.
+
+What it does show is mostly market beta (Table \ref{tab:post}). The annualised mean excess return of L--H over T-bills was `r p2(pf("post", "LH", "mean_ex"), 1)`% in 2013--2024 and `r p2(pf("pub", "LH", "mean_ex"), 1)`% in 2016--2024. In a CAPM decomposition for 2013--2024, its realised beta of `r f2(pf("post", "LH", "beta"))` times the market's mean excess return of `r p2(pf("post", "MKT", "mean_ex"), 1)`% gives `r p2(pf("post", "LH", "beta") * pf("post", "MKT", "mean_ex"), 1)`% per year, against a CAPM alpha of `r p2(pf("post", "LH", "a_capm"), 1)`% ($t$ = `r f2(pf("post", "LH", "t_capm"))`): the decomposition attributes the negative excess return mainly to the short market exposure in a rising market. Of the beta-neutral portfolio's mean excess return of `r p2(pf("post", "BN", "mean_ex"), 1)`% per year, the CAPM attributes `r p2(pf("post", "BN", "beta") * pf("post", "MKT", "mean_ex"), 1)` points to its beta of `r f2(pf("post", "BN", "beta"))`; the shrunk-beta version, with a realised beta of `r f2(pf("post", "BNs", "beta"))`, earned `r p2(pf("post", "BNs", "mean_ex"), 1)`% ($t$ = `r f2(pf("post", "BNs", "t_ex"))`, Appendix Table \ref{tab:ls}). The low-beta quintile had a lower Sharpe ratio than the market (`r f2(pf("post", "Q1", "sharpe"))` against `r f2(pf("post", "MKT", "sharpe"))`) but a positive CAPM alpha of `r p2(pf("post", "Q1", "a_capm"), 1)`% per year ($t$ = `r f2(pf("post", "Q1", "t_capm"))`); twelve years cannot distinguish a premium of the 1968--2012 size (`r p2(pf("rep", "Q1", "a_capm"), 1)`% per year) from zero. With only `r ahv("post", "LH", "ah_n")` non-overlapping years, the predictive regression after 2012 has little power: the reduced-bias L--H slope is of similar size as before (`r p2(ahv("post", "LH", "ah_b"), 1)` against `r p2(ahv("rep", "LH", "ah_b"), 1)` percentage points per standard deviation, $t$ = `r f2(ahv("post", "LH", "ah_t"))`), whereas the BN slope turns negative ($t$ = `r f2(ahv("post", "BN", "ah_t"))`).
+
+Can the valuation signal be used in real time? With breakpoints estimated only from earlier months, the one-year L--H return after a real-time state-5 signal is `r p2(res$T2_rt[strategy == "LH" & state == 5 & h == 12, value], 1)`% and after a state-1 signal `r p2(res$T2_rt[strategy == "LH" & state == 1 & h == 12, value], 1)`%. GFKSW explicitly do not propose a timing rule; Table \ref{tab:timing} tests the simplest one their results suggest: hold the long-short portfolio only when the real-time state is 4 or 5, in a second variant only if the strategy's own trailing 12-month return is also positive (time-series momentum of the strategy, not the MOM factor). For L--H, timing turns a negative net Sharpe ratio into a small positive one, mainly by avoiding the short market exposure, but not significantly (Holm $p$ = `r pv(tmr("full", "LH", "val", "p_holm"))`); for the beta-neutral portfolio it lowers the net Sharpe ratio from `r f2(tmr("full", "BN", "always", "sharpe_net"))` to `r f2(tmr("full", "BN", "val", "sharpe_net"))`. After 2012 the real-time states never exceeded 3, so the rule held T-bills throughout. The tested rules bring no statistically significant net Sharpe ratio improvement, which does not prove that timing is useless; timing factors with their own valuation spreads is known to be hard [@asness2017].
+
+```{r}
+#| label: tab-timing
+lab7 <- c(always = "Always invested", val = "Valuation (states 4--5)", vm = "Valuation and own momentum")
+mk7 <- function(stg) {
+  z <- tm[period == "full" & strategy == stg][match(names(lab7), rule)]
+  est <- data.frame(inv = f2(100 * z$invested, 0), m = f2(100 * z$mean_ex, 1), sr = f2(z$sharpe), a1 = f2(100 * z$a_capm, 1),
+                    a4 = f2(100 * z$a_4f, 1), srn = f2(z$sharpe_net), d = ifelse(is.na(z$sr_diff), "--", f2(z$sr_diff)),
+                    ph = ifelse(is.na(z$p_holm), "--", pv(z$p_holm)))
+  tst <- data.frame(inv = "", m = f2(z$t_ex), sr = "", a1 = f2(z$t_capm), a4 = f2(z$t_4f), srn = "",
+                    d = ifelse(is.na(z$sr_se), "", f2(z$sr_se)), ph = "")
+  interleave(est, tst, unname(lab7))
+}
+df <- rbind(mk7("LH"), mk7("BN"))
+names(df) <- c("Rule", "Invested (\\%)", "Excess (\\%)", "SR", "CAPM $\\alpha$ (\\%)", "4F $\\alpha$ (\\%)", "SR net", "$\\Delta$SR net", "Holm $p$")
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrrr",
+    caption = paste0("Real-time valuation timing of the long-short portfolios, ", res$rt_start %/% 12, "--2024 (exploratory)"), label = "timing") |>
+  kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 7.5) |>
+  pack_rows("Low-minus-high (L--H)", 1, 6, bold = FALSE, italic = TRUE) |>
+  pack_rows("Beta neutral (BN)", 7, 12, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("States are classified each month with quintile breakpoints from earlier formation months only (expanding window, at least ",
+    "ten years from 1968). The portfolio is held when the real-time state is 4 or 5 (valuation), additionally only when its own trailing 12-month ",
+    "return is positive (valuation and own momentum), and otherwise T-bills are held. Annualised; in parentheses Newey-West t-statistics and, for ",
+    "$\\\\Delta$SR net, the Ledoit-Wolf standard error. SR net deducts 10 bp per dollar traded, the lending fee and the cost of switching in and out. ",
+    "$\\\\Delta$SR net: difference to the always-invested net Sharpe ratio; Holm-adjusted p-values over the four comparisons."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+# Beta forecasts and portfolio performance
+
+GFKSW sort on betas from 60 monthly returns. Daily returns contain more information about co-movement but are noisier and suffer from non-synchronous trading [@dimson1979; @hollstein2019]. Appendix Table \ref{tab:beta} compares seven estimators, which differ in return frequency and window. Holding the window at 36 months, daily returns forecast the realised beta of the same portfolios significantly better than monthly returns (Diebold-Mariano $t$ = `r f2(dmv("beta_D36", "beta_M36", "dm_t"))`). Holding the frequency fixed, short windows are worse: the 36-month monthly beta is less accurate than the 60-month one ($t$ = `r f2(dmv("beta_M36", "beta_M60", "dm_t"))`), and the three-month daily beta less accurate than the 36-month one ($t$ = `r f2(dmv("beta_D3", "beta_D36", "dm_t"))`). Against GFKSW's 60-month monthly beta, only the 36-month daily beta and the Dimson-corrected 12-month daily beta have significantly smaller squared errors (Holm $p$ = `r pv(dmv("beta_D36", "beta_M60", "p_holm"))` and `r pv(dmv("beta_DD12", "beta_M60", "p_holm"))`), and these results survive a Holm adjustment over all ten forecast comparisons (largest adjusted $p$ = `r pv(max(dm_key$p_holm_all))`). Daily betas are thus better risk forecasts when the window is long enough, in line with @hollstein2019.
+
+As strategies, the estimated ranking reverses. The ex-ante beta-neutral portfolio formed on the 60-month monthly beta has the highest gross Sharpe ratio (`r f2(xA[spec == "beta_M60", bnd_sharpe])`); every daily specification has a lower one (`r f2(min(xA[grepl("beta_D", spec), bnd_sharpe]))` to `r f2(max(xA[grepl("beta_D", spec), bnd_sharpe]))`), but no difference in gross Sharpe ratios is significant after the Holm adjustment (smallest adjusted $p$ = `r pv(min(srb$p_holm))`). The valuation effect is also largest with the 60-month monthly beta. A plausible but untested explanation is that slow-moving monthly betas capture persistent firm characteristics such as value and leverage, whereas daily betas measure current co-movement. The daily-beta portfolio of Section 7 uses the 12-month daily beta, which is not among the significantly better forecasters; we do not switch to the best forecaster after the fact.
+
+# Long-only implementation after trading costs
+
+Where does the premium come from? In 1968--2012 the high-beta quintile's CAPM alpha was `r p2(pf("rep", "Q5", "a_capm"), 1)`% per year ($t$ = `r f2(pf("rep", "Q5", "t_capm"))`) and the low-beta quintile's `r p2(pf("rep", "Q1", "a_capm"), 1)`% ($t$ = `r f2(pf("rep", "Q1", "t_capm"))`, Table \ref{tab:post}): `r p2(short_share, 0)`% of the L--H alpha comes from the short side. Most investors cannot or will not short and are judged against a cap-weighted benchmark [@baker2011; @blitz2014]; for them the question is whether a long-only low-beta portfolio beats the portfolio they would otherwise hold. All portfolios in Table \ref{tab:lo} are formed from the same large-cap universe over 1968--2024, rebalanced at month ends and charged costs on their own turnover: the value-weighted low-beta quintile; a buffer rule that buys stocks entering the lowest 20% of betas and sells them only when they leave the lowest 30%; quarterly rebalancing; the quintile with target weights capped at 5% per stock at each rebalancing; the quintile formed on 12-month daily betas; and two long-only global minimum-variance portfolios with a 3% weight cap, one estimated with the constant-correlation shrinkage of @ledoit2004 on 60 monthly returns, the other with the nonlinear shrinkage of @ledoit2020 on the daily returns of the last 12 months. With on average `r f2(res$minvar_info[, mean(n)], 0)` (monthly) and `r f2(res$minvar_nl_info[, mean(n)], 0)` (daily) eligible stocks, the sample covariance matrix is singular in both cases. The benchmarks are the cap-weighted portfolio of the same universe and the equally weighted $1/N$ portfolio [@demiguel2009].
+
+```{r}
+#| label: tab-lo
+ord <- c("LowBeta", "LowBeta buffer", "LowBeta quarterly", "LowBeta capped", "LowBeta (daily 12m)", "Min-variance", "Min-variance NL", "Large-cap EW", "Large-cap VW")
+hdr <- c("Q1", "Buffer", "Quarterly", "Capped", "Daily $\\beta$", "Monthly", "Daily", "$1/N$", "Cap-wt.")
+g <- LO[match(ord, strategy)]; n <- LOn[match(ord, strategy)]; b <- BE[match(ord, strategy)]; v <- dv[match(ord, strategy)]
+isB <- ord == "Large-cap VW"
+na_ <- function(x, cond) ifelse(cond, "--", x)
+tr <- function(x, cond = FALSE, l = "(", r = ")") ifelse(rep_len(cond, length(x)), "", paste0(l, x, r))   # t-statistic / standard error row
+rw <- function(lab, v) as.data.frame(t(c(lab, v)), stringsAsFactors = FALSE)
+df <- rbind(
+  rw("Excess return (\\%)", f2(100 * g$mean_ex, 1)), rw("Volatility (\\%)", f2(100 * g$vol, 1)),
+  rw("Sharpe ratio", f2(g$sharpe)), rw("Max. drawdown (\\%)", f2(100 * g$mdd, 0)), rw("Market beta", f2(g$beta)),
+  rw("CAPM $\\alpha$ (\\%)", f2(100 * g$alpha_capm, 1)), rw("", tr(f2(g$t_capm))),
+  rw("Four-factor $\\alpha$ (\\%)", f2(100 * g$alpha_4f, 1)), rw("", tr(f2(g$t_4f))), rw("HML loading", f2(g$b_hml)),
+  rw("Active return (\\%)", na_(f2(100 * g$active, 1), isB)), rw("", tr(f2(g$t_active), isB)),
+  rw("Tracking error (\\%)", na_(f2(100 * g$te, 1), isB)), rw("Information ratio", na_(f2(g$active / g$te), isB)),
+  rw("Turnover (\\% p.a.)", f2(100 * g$to, 0)), rw("Sharpe ratio, net", f2(n$sharpe)),
+  rw("$\\Delta$SR net", na_(f2(n$sr_diff), isB)), rw("", tr(f2(n$sr_se), isB, "[", "]")),
+  rw("$p$-value", ifelse(isB, "--", pv(n$p_sr))), rw("Holm $p$-value", ifelse(isB, "--", pv(n$p_holm))),
+  rw("Break-even cost (bp)", ifelse(is.finite(b$be_sr), f2(b$be_sr, 0), ifelse(isB, "--", "<0"))),
+  rw("Positions", f2(v$n, 0)), rw("Largest weight (\\%)", f2(100 * v$wmax, 1)), rw("Effective N", f2(v$effn, 0)))
+names(df) <- c("", hdr)
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrrrr",
+    caption = "Long-only low-beta and minimum-variance portfolios versus the cap-weighted benchmark, 1968--2024", label = "lo") |>
+  kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 8) |>
+  add_header_above(c(" " = 1, "Low-beta quintile" = 5, "Minimum variance" = 2, "Benchmarks" = 2)) |>
+  pack_rows("Panel A: gross performance", 1, 14, bold = FALSE, italic = TRUE) |>
+  pack_rows("Panel B: costs (scenario: 10 bp per dollar traded)", 15, 21, bold = FALSE, italic = TRUE) |>
+  pack_rows("Panel C: diversification (averages over rebalancing dates)", 22, 24, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("Annualised; Newey-West t-statistics (", nw_l(684), " lags) in parentheses, standard errors in brackets. Capped: quintile weights capped at 5\\\\%; Daily $\\\\beta$: quintile ",
+    "formed on 12-month daily betas; minimum variance with a 3\\\\% cap, covariance matrix from 60 monthly returns (constant-correlation shrinkage) or from ",
+    "the daily returns of the last 12 months (nonlinear shrinkage). Cap-wt.: value-weighted portfolio of all universe stocks (benchmark of the tests); the ",
+    "Fama-French market has an excess return of ", f2(100 * row_of(LO, "Market (FF)")$mean_ex, 1), "\\\\% and a Sharpe ratio of ", f2(row_of(LO, "Market (FF)")$sharpe), ". ",
+    "Turnover: purchases plus sales relative to drifted weights. $\\\\Delta$SR net: Ledoit-Wolf (2008) HAC test against the cost-bearing benchmark; ",
+    "the low-beta quintile is the primary comparison (unadjusted $p$), Holm adjustment over the ", length(n$p_holm[!is.na(n$p_holm)]), " candidates. Break-even: ",
+    "one-way cost at which the net Sharpe ratio equals the benchmark's (values above 50 bp extrapolate beyond the highest cost scenario). Effective N: ",
+    "$1/\\\\sum w_i^2$. Liquidity: Appendix Table \\\\ref{tab:liq}."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+The low-beta quintile delivers lower risk: `r f2(100 * row_of(LO, "LowBeta")$vol, 1)`% volatility, a beta of `r f2(row_of(LO, "LowBeta")$beta)` and a maximum drawdown of `r f2(100 * row_of(LO, "LowBeta")$mdd, 0)`%, against `r f2(100 * row_of(LO, "Large-cap VW")$vol, 1)`%, `r f2(row_of(LO, "Large-cap VW")$beta)` and `r f2(100 * row_of(LO, "Large-cap VW")$mdd, 0)`% for the benchmark, at a lower excess return (`r f2(100 * row_of(LO, "LowBeta")$mean_ex, 1)`% against `r f2(100 * row_of(LO, "Large-cap VW")$mean_ex, 1)`% per year). Its Sharpe ratio is `r f2(row_of(LO, "LowBeta")$sharpe)` against `r f2(row_of(LO, "Large-cap VW")$sharpe)` gross and `r f2(row_of(LOn, "LowBeta")$sharpe)` against `r f2(row_of(LOn, "Large-cap VW")$sharpe)` after the base-case cost. This primary comparison is inconclusive: the difference of `r f2(row_of(LOn, "LowBeta")$sr_diff)` has a standard error of `r f2(row_of(LOn, "LowBeta")$sr_se)` ($p$ = `r pv(row_of(LOn, "LowBeta")$p_sr)`), consistent both with no advantage and with a sizeable one. Judged as an active manager, the portfolio trails the benchmark by `r f2(-100 * row_of(LO, "LowBeta")$active, 1)`% per year with a tracking error of `r f2(100 * row_of(LO, "LowBeta")$te, 1)`% (information ratio `r f2(row_of(LO, "LowBeta")$active / row_of(LO, "LowBeta")$te)`): exactly the profile that makes benchmarked managers avoid low-beta stocks [@baker2011]. Its CAPM alpha of `r f2(100 * row_of(LO, "LowBeta")$alpha_capm, 1)`% per year ($t$ = `r f2(row_of(LO, "LowBeta")$t_capm)`) shrinks to `r f2(100 * row_of(LO, "LowBeta")$alpha_4f, 1)`% with the four-factor model (95% interval `r f2(100 * a4ci[1], 1)`% to `r f2(100 * a4ci[2], 1)`%), alongside an HML loading of `r f2(row_of(LO, "LowBeta")$b_hml)`.
+
+The low-beta quintile turns over `r f2(100 * row_of(LO, "LowBeta")$to, 0)`% of its value per year, against `r f2(100 * row_of(LO, "Large-cap VW")$to, 0)`% for the benchmark, and its net Sharpe ratio would equal the benchmark's at a one-way cost of `r f2(row_of(BE, "LowBeta")$be_sr, 0)` basis points (Appendix @fig-costs). The buffer rule cuts turnover to `r f2(100 * row_of(LO, "LowBeta buffer")$to, 0)`% and raises the break-even cost to `r f2(row_of(BE, "LowBeta buffer")$be_sr, 0)` basis points, an extrapolation beyond the tested range of 0 to 50 basis points. In sample, the 5% cap raises the effective number of positions from `r f2(row_of(dv, "LowBeta")$effn, 0)` to `r f2(row_of(dv, "LowBeta capped")$effn, 0)` and turnover from `r f2(100 * row_of(LO, "LowBeta")$to, 0)`% to `r f2(100 * row_of(LO, "LowBeta capped")$to, 0)`%. Under the assumed cost model, the estimated net Sharpe ratio rises from `r f2(row_of(LOn, "LowBeta")$sharpe)` to `r f2(row_of(LOn, "LowBeta capped")$sharpe)`. These are descriptive results. The daily nonlinear-shrinkage implementation has the lowest realized volatility among the portfolios considered (`r f2(100 * row_of(LO, "Min-variance NL")$vol, 1)`%). Since return frequency, estimation window, estimator and stock selection differ at the same time from the monthly version, this is no isolated evidence that the estimator is superior. Its weights change so quickly that it turns over `r f2(100 * row_of(LO, "Min-variance NL")$to, 0)`% per year and its net Sharpe ratio falls to `r f2(row_of(LOn, "Min-variance NL")$sharpe)` (break-even `r f2(row_of(BE, "Min-variance NL")$be_sr, 0)` basis points). The monthly version has the largest CAPM alpha (`r f2(100 * row_of(LO, "Min-variance")$alpha_capm, 1)`%, $t$ = `r f2(row_of(LO, "Min-variance")$t_capm)`) and the highest net Sharpe ratio (`r f2(row_of(LOn, "Min-variance")$sharpe, 3)`), closely followed by the buffer rule (`r f2(row_of(LOn, "LowBeta buffer")$sharpe, 3)`) and the capped quintile (`r f2(row_of(LOn, "LowBeta capped")$sharpe, 3)`). No net Sharpe ratio of the `r sum(!is.na(LOn$p_holm))` candidates differs significantly from the benchmark's after the Holm adjustment, and since 2013 every one of them has had a lower net Sharpe ratio than the benchmark (low-beta quintile: `r f2(row_of(LOp, "LowBeta")$sharpe)` against `r f2(row_of(LOp, "Large-cap VW")$sharpe)`).
+
+The low-beta quintile is also concentrated: its largest position averages `r f2(100 * row_of(dv, "LowBeta")$wmax, 1)`% of the portfolio and its effective number of stocks is `r f2(row_of(dv, "LowBeta")$effn, 0)` against `r f2(row_of(dv, "Large-cap VW")$effn, 0)` for the benchmark. Its holdings rank like the benchmark's by dollar volume (Appendix Table \ref{tab:liq}). Proportional costs are modelled as scenarios, but actual execution costs and capacity, which depend on trade size and market impact, are not estimated. For investors who can short (Appendix Table \ref{tab:ls}), the beta-neutral portfolio keeps a net Sharpe ratio of `r f2(LS[strategy == "Beta neutral (fixed 25%)", sharpe_n])` over 1968--2024, the nearly beta-neutral version with shrunk betas only `r f2(LS[strategy == "Beta neutral (shrunk beta)", sharpe_n])`, and L--H a negative one despite a gross CAPM alpha with $t$ = `r f2(LS[strategy == "Low - high", t1_g])`; no long-short four-factor alpha is significant before or after costs.
+
+# Risk measurement and performance across holding periods
+
+Month-end data hide intra-month risk, and a strategy is experienced through the windows over which investors judge it, typically three to five years. We rebuild every portfolio's daily return path from CRSP's daily file with unchanged holdings, monthly rebalancing and weights drifting within the month; long-short positions are also reset only at month ends, and all returns are gross of costs. Every stock-month of the cap-weighted universe portfolio compounds to its monthly return except `r rcn("next_month_delisting") + rcn("conflict")` delisting months of `r format(sum(RCv$stock_months), big.mark = ",")`; their treatment changes the volatilities in Table \ref{tab:freq} by at most `r cl(100 * max(dmx$d_vol), 2)` percentage points and the Sharpe ratios by at most `r cl(max(dmx$d_sr), 3)` (other statistics: Appendix Table \ref{tab:daily}), so the comparison isolates the measurement frequency.
+
+```{r}
+#| label: tab-freq
+ordf <- c("LowBeta", "HighBeta", "Min-variance", "Large-cap VW", "Beta neutral (fixed 25%)", "Low - high", "Market (FF)")
+frx <- fr[match(ordf, strategy)]; fbx <- fb[match(ordf, strategy)]
+df <- data.frame(P = c("Low beta (Q1)", "High beta (Q5)", "Min. variance (monthly)", "Cap weight", "Beta neutral (25\\%)", "Low -- high", "Market"),
+  vd = f2(100 * frx$vol_daily, 1), vm = f2(100 * frx$vol_monthly, 1), sd = f2(frx$sharpe_daily), sm = f2(frx$sharpe_monthly),
+  md = f2(100 * frx$mdd_daily, 0), mm = f2(100 * frx$mdd_monthly, 0), kd = f2(frx$kurt_daily, 1), km = f2(frx$kurt_monthly, 1),
+  bd = f2(fbx$beta_daily), bm = f2(fbx$beta_monthly))
+names(df) <- c("Portfolio", "Daily", "Monthly", "Daily", "Monthly", "Daily", "Monthly", "Daily", "Monthly", "Daily", "Monthly")
+tab(df, "The same portfolios measured with daily and with monthly returns, 1968--2024", "freq",
+    notes = paste0("Volatility and Sharpe ratios are annualised with 252 days or 12 months; drawdowns, kurtosis and betas are not. Monthly returns compound the daily returns ",
+      "of the same holdings, so rebalancing is monthly in both cases. Kurtosis: excess kurtosis of daily or monthly excess returns, i.e. different horizons. Beta: slope on the market excess ",
+      "return at each frequency. Gross returns; daily paths from CRSP's daily file (dsf\\\\_v2); excess returns over the ",
+      "T-bill return compounded from daily rates. Long-short portfolios: total returns, legs reset at month ends."),
+    align = "lrrrrrrrrrr", fs = 7.5, wide = TRUE,
+    header = c(" " = 1, "Volatility (%)" = 2, "Sharpe ratio" = 2, "Max. drawdown (%)" = 2, "Excess kurtosis" = 2, "Market beta" = 2))
+```
+
+Table \ref{tab:freq} shows that frequency matters for risk measurement more than for the ranking. Annualised daily volatility exceeds monthly volatility for the low-beta quintile (`r f2(100 * fr[strategy == "LowBeta", vol_daily], 1)`% versus `r f2(100 * fr[strategy == "LowBeta", vol_monthly], 1)`%) and the cap-weighted benchmark (`r f2(100 * fr[strategy == "Large-cap VW", vol_daily], 1)`% versus `r f2(100 * fr[strategy == "Large-cap VW", vol_monthly], 1)`%), but not for the minimum-variance portfolio. With serially uncorrelated daily returns the two would agree up to sampling error and compounding effects. The variance ratio of overlapping 21-day to daily log returns [@lo1988], which differs from the squared ratio of the volatilities in the table because it uses log returns and overlapping windows rather than calendar months, is `r f2(vrt[strategy == "LowBeta", vr], 3)` for the low-beta quintile and `r f2(vrt[strategy == "Large-cap VW", vr], 3)` for the benchmark, with heteroskedasticity-robust $z$-statistics of `r f2(vrt[strategy == "LowBeta", z])` and `r f2(vrt[strategy == "Large-cap VW", z])`: the gap is consistent with mild negative serial correlation within the month, but the data do not establish it. Daily drawdowns are at least as deep, because intra-month troughs are invisible in month-end data, and daily returns are far more fat-tailed. The low-beta quintile's beta is higher with daily data (`r f2(fb[strategy == "LowBeta", beta_daily])` versus `r f2(fb[strategy == "LowBeta", beta_monthly])`), and the beta-neutral portfolio's daily beta of `r f2(fb[strategy == "Beta neutral (fixed 25%)", beta_daily])` (Newey-West standard error `r f2(fb[strategy == "Beta neutral (fixed 25%)", se_daily])`) confirms that it carries market risk at both frequencies. Sharpe ratios change by at most `r f2(max(abs(fr$sharpe_daily - fr$sharpe_monthly)), 2)` between frequencies. The monthly columns differ slightly from Table \ref{tab:lo} only through the T-bill return compounded from daily rates (up to `r f2(1e4 * max(t78$max_rf_diff), 0)` basis points per month away from the monthly series) and, for the market, compound the daily Fama-French factor; with the monthly T-bill series the Sharpe ratios of Table \ref{tab:lo} are reproduced exactly.
+
+```{r}
+#| label: fig-roll
+#| fig-cap: "Rolling 36- and 60-month evaluation windows of monthly gross returns, plotted at the window's last month; the first windows end in December 1970 (36 months) and December 1972 (60 months), the last in December 2024. Top: annualised Sharpe ratio (from excess returns) of the low-beta quintile and of the minimum-variance portfolio (monthly estimation) minus that of the cap-weighted benchmark of the same universe. Middle: CAPM alpha of the low-beta quintile and of the minimum-variance portfolio (monthly estimation), in percent per year. Bottom: annualised volatility, in percent, of the low-beta quintile, the minimum-variance portfolio and the cap-weighted benchmark."
+#| fig-height: 3.0
+#| fig-width: 7
+r <- copy(roll)[, date := eom(mid)]
+d1 <- melt(r[, .(date, window, "Low beta (Q1)" = sr_lb - sr_vw, "Minimum variance" = sr_mv - sr_vw)],
+           id.vars = c("date", "window"))[, panel := "SR diff."]
+d2 <- melt(r[, .(date, window, "Low beta (Q1)" = 100 * a_lb, "Minimum variance" = 100 * a_mv)], id.vars = c("date", "window"))[, panel := "Alpha (%)"]
+d3 <- melt(r[, .(date, window, "Low beta (Q1)" = 100 * vol_lb, "Minimum variance" = 100 * vol_mv, "Cap weight" = 100 * vol_vw)],
+           id.vars = c("date", "window"))[, panel := "Vol. (%)"]
+d <- rbind(d1, d2, d3)
+d[, variable := factor(variable, levels = c("Low beta (Q1)", "Minimum variance", "Cap weight"))]
+d[, window := paste0(window, "-month window")]
+d[, panel := factor(panel, levels = c("SR diff.", "Alpha (%)", "Vol. (%)"))]
+hl <- data.table(panel = factor(c("SR diff.", "Alpha (%)"), levels = levels(d$panel)), y = 0)
+ggplot(d, aes(date, value, colour = variable, linetype = variable)) + geom_hline(data = hl, aes(yintercept = y), linewidth = 0.3) +
+  geom_line(linewidth = 0.4) +
+  facet_grid(panel ~ window, scales = "free_y") + scale_colour_manual(values = c(pal[1], col_mv, pal[5])) +
+  scale_linetype_manual(values = c("solid", "solid", "dashed")) +
+  labs(x = NULL, y = NULL) + theme_paper + theme(strip.text.y = element_text(angle = 0, hjust = 0)) +
+  guides(colour = guide_legend(nrow = 1), linetype = guide_legend(nrow = 1))
+```
+
+Rolling evaluation windows (@fig-roll), distinct from the fixed 60-month estimation windows of betas and covariances, show what an investor would have experienced. The risk reduction is the most stable property of the low-beta quintile: its volatility is below the benchmark's in `r p2(rs[window == 36, vol], 0)`% of 36-month and `r p2(rs[window == 60, vol], 0)`% of 60-month windows, at `r f2(rs[window == 36, vr_min], 2)` to `r f2(rs[window == 36, vr_max], 2)` times the benchmark's volatility over 36 months. Its return advantage is not: it has a higher Sharpe ratio than the benchmark in `r p2(rs[window == 36, sr], 0)`% of 36-month and `r p2(rs[window == 60, sr], 0)`% of 60-month windows, a positive CAPM alpha in `r p2(rs[window == 60, a], 0)`% of 60-month windows, and a higher raw return than the benchmark in only `r p2(rs[window == 60, act], 0)`% of 60-month windows. The minimum-variance portfolio has the higher Sharpe ratio in `r p2(rs[window == 60, mv], 0)`% of 60-month windows. Overlapping windows are strongly dependent, so these shares describe experience, not independent evidence. The pattern is consistent with the benchmarking explanation of why the anomaly persists [@baker2011]: a strategy that trails its benchmark for years is hard to hold, even when its risk-adjusted return is higher over the full sample.
+
+\FloatBarrier
+
+# Conclusion
+
+GFKSW's unconditional results replicate almost exactly. The one-year conditional L--H returns also reproduce the pattern at the extremes: positive after the cheapest state and negative after the most expensive state. The middle states do not replicate, and, in our reconstruction and simulations, Newey-West statistics of averages over overlapping windows overstate precision. The cheap-minus-expensive contrasts are not robustly significant at the 5% level. That of the zero-cost portfolio rests largely on the technology bust and the 2009 rebound. A bias-corrected predictive regression, which tests a different hypothesis, shows in sample that valuation predicts the beta-neutral portfolio's return, but the conditional premium coincides largely with a value exposure, no four-factor alpha is significant with the block bootstraps or calendar-time regressions, and the tested timing rules did not significantly improve the net Sharpe ratio. Since 2013 valuations have never been cheap enough to test GFKSW's central prediction, and a CAPM decomposition attributes the zero-cost portfolio's negative excess returns mainly to its negative beta in a rising market.
+
+For long-only investors, an implementation gap remains: about two thirds of the L--H portfolio's CAPM alpha in 1968--2012 comes from shorting high-beta stocks. The most stable result is the historical risk reduction. A long-only low-beta portfolio cut volatility by about a fifth and the maximum drawdown from `r f2(100 * row_of(LO, "Large-cap VW")$mdd, 0)`% to `r f2(100 * row_of(LO, "LowBeta")$mdd, 0)`%, but neither a net Sharpe ratio advantage over the benchmark nor a timing advantage is established, and investors must accept deep drawdowns and long benchmark underperformance. In the variants studied, the buffer rule reduces turnover and the weight cap concentration, without proven general superiority. Better risk forecasts from daily betas did not yield significantly higher gross Sharpe ratios, and the daily nonlinear-shrinkage portfolio has the lowest realized volatility but no higher net Sharpe ratio than the low-beta quintile.
+
+Four limitations remain: the valuation states rest on few episodes, so test sizes depend on how their volatility is modelled; CRSP data vintages differ from GFKSW's; the proportional cost model uses scenario values and ignores market impact, financing spreads and borrowing constraints; and the analysis is limited to US large caps.
+
+```{=tex}
+\newpage
+```
+# References {.unnumbered}
+
+::: {#refs}
+:::
+
+```{=tex}
+\newpage
+\appendix
+```
+# Appendix {.unnumbered}
+
+## A. Replication design, data treatment and sensitivity {.unnumbered}
+
+```{r}
+#| label: tab-a0
+df <- data.frame(
+  Item = c("Stock data", "Delisting returns", "Market index", "Universe", "Beta", "Book equity", "B/P timing", "B/P outliers",
+           "Long-short excess returns", "Beta-neutral ratio", "Multi-period returns", "Inference"),
+  GFKSW = c("CRSP 1925--2012 (legacy format), share codes 10/11", "Performance-related delistings: $-30$\\% (NYSE/AMEX), $-55$\\% (NASDAQ)",
+            "CRSP value-weighted", "Top third by NYSE breakpoints, USD 2--1,000",
+            "60 months (min. 24), monthly", "Compustat, December FYE, two years; French data before 1951",
+            "Prior fiscal year; market value at month end", "Top and bottom 0.5\\% of B/P deleted; 108 months per state",
+            "L--H: $r_{Q1} - r_{Q5}$; BN: $r_{Q1} - 0.25 r_{Q5} - 0.75 r_f$; three-month T-bills", "Fixed 25\\% (full-sample average betas)",
+            "Annualised future cumulative excess return; monthly rebalancing", "OLS t; Newey-West for overlapping windows"),
+  Here = c("CRSP CIZ format (Tidy Finance database), US common stocks; analysis ends Dec. 2024",
+           "CRSP monthly delisting-month returns; GFKSW rule as sensitivity (Table \\ref{tab:a1}); daily paths with delisting-day records",
+           "Fama--French market total return (MKT--RF + RF; same mean as panel VW return)", "Same; stocks delisted in the formation month excluded; universe restricted to December-FYE firms only in Table \\ref{tab:a4}",
+           "Identical; also 36/120 months and daily 3/12/36 months", "Identical; Davis-Fama-French book equity before Compustat coverage",
+           "December book equity from June of the following year (calendar-year timing as sensitivity)", "Stock-level B/P trimmed cross-sectionally each month; 108 months per state",
+           "Same definitions; one-month T-bills", "Fixed 25\\%; ex-ante and shrunk-beta ratios as extensions",
+           "Chained monthly excess returns, annualised; windows end by Dec. 2012",
+           "Replicated statistics plus circular block bootstrap for window averages (block-length, volatility and size checks); Newey-West elsewhere"))
+names(df) <- c("Item", "GFKSW (2015)", "This paper")
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", caption = "Replication design", label = "a0") |>
+  kable_styling(latex_options = "hold_position", font_size = 7.5) |> column_spec(2, width = "5.4cm") |> column_spec(3, width = "6.4cm")
+```
+
+```{r}
+#| label: tab-t2
+pa <- data.table(state = 1:5, LHp = c(-.21,.21,-.40,.23,.87), BNp = c(-.12,.69,.21,.47,.80))
+A2 <- merge(A, pa, by = "state")
+est <- data.frame(range = paste0(f2(A2$from), " to ", f2(A2$to), " [", f2(gfk2a$from), " to ", f2(gfk2a$to), "]"),
+  n = paste0(f2(A2$nstocks, 0), " [", gfk2a$n, "]"),
+  Q1 = f2(100 * A2$Q1), Q2 = f2(100 * A2$Q2), Q3 = f2(100 * A2$Q3), Q4 = f2(100 * A2$Q4), Q5 = f2(100 * A2$Q5),
+  LH = f2(100 * A2$LH), LHp = f2(A2$LHp), BN = f2(100 * A2$BN), BNp = f2(A2$BNp))
+tsd <- data.frame(range = "", n = "", Q1 = "", Q2 = "", Q3 = "", Q4 = "", Q5 = "", LH = f2(A2$t_LH), LHp = "",
+                  BN = f2(A2$t_BN), BNp = "")[rep(1, 5), ]
+tsd$LH <- f2(A2$t_LH); tsd$BN <- f2(A2$t_BN)
+pA <- interleave(est, tsd, states_lab)
+names(pA) <- c("State", "B/P spread", "N", "Q1", "Q2", "Q3", "Q4", "Q5", "L--H", "GFKSW", "BN", "GFKSW")
+kbl(pA, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "llrrrrrrrrrr",
+    caption = "Next-month returns on beta portfolios by initial B/P spread state, 1968--2012 (replication of GFKSW Table 2, Panel A)", label = "t2") |>
+  kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 8) |>
+  add_header_above(c(" " = 3, "Beta quintile (%)" = 5, "Long-short (%)" = 4)) |>
+  footnote(general = paste0("States are quintiles of the 540 monthly B/P spreads (average B/P of the low-beta minus the high-beta quintile, ",
+    "stock-level B/P trimmed at 0.5\\\\% in each tail every month); each state contains 108 months. Value-weighted returns in percent in the month ",
+    "after formation; ordinary t-statistics in parentheses, as in GFKSW. N: average number of stocks per extreme quintile. BN returns are in excess ",
+    "of the T-bill rate. GFKSW: their Table 2, Panel A; their B/P spread ranges and stock counts in brackets."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+```{r}
+#| label: tab-a1
+qr <- dd$q_rep; qf <- dd$q_full
+v <- function(per, var, col, scale = 100, d = 3) f2(scale * im(per, var, col), d)
+st12 <- function(var, st) f2(100 * dd$impact_states[variant == var & strategy == "LH" & h == 12 & state == st, value])
+col_ <- function(var, top) c(top, v("rep", var, "q1"), v("rep", var, "q5"), v("rep", var, "lh"), v("rep", var, "bn"),
+                             v("rep", var, "mdd1", d = 1), v("rep", var, "mdd5", d = 1), st12(var, 1), st12(var, 5))
+df <- data.frame(
+  Item = c("Held stock-months affected", "Mean return Q1 (\\% per month)", "Mean return Q5 (\\% per month)", "Mean return L--H (\\% per month)",
+           "Mean excess return BN (\\% per month)", "Maximum drawdown Q1 (\\%)", "Maximum drawdown Q5 (\\%)",
+           "L--H, one year, state 1 (\\% p.a.)", "L--H, one year, state 5 (\\% p.a.)"),
+  base = col_("v3", "--"), gfk = col_("gfksw", format(gfk_rep)), v2 = col_("v2", format(sum(qr$n_msf))),
+  cash = col_("cash", format(sum(qr$n_excl))), dsf = col_("dsf", format(nrow(dd$conflicts[in_p(mid, cfg$rep) & !is.na(q)]))))
+names(df) <- c("1968--2012", "Baseline", linebreak(c("GFKSW\nrule", "Delisting months\ndropped", "Formation-month\ndelistings kept", "Daily-file\nreturn"), align = "r"))
+tab(df, "Treatment of delisting months and its effect, 1968--2012", "a1",
+    notes = paste0("Baseline: holding returns from CRSP's monthly file, including delisting months; stocks whose last trading day falls in the formation month ",
+      "are not bought. GFKSW rule: in held months in which the stock is dropped by its exchange (CIZ delisting action GDR, the legacy 500 codes), the return ",
+      "after the last trading day is set to $-30$\\\\% (NYSE, AMEX) or $-55$\\\\% (NASDAQ); ", gfk_n, " held stock-months over 1929--2024, ", gfk_rep,
+      " in 1968--2012. Delisting months dropped: held stocks without a regular month-end ",
+      "record removed and weights renormalised. Formation-month delistings kept: stocks delisted in the formation month bought, their proceeds held at a zero ",
+      "return. Daily-file return: in the delisting months in which CRSP's monthly return excludes the delisting-day return of its daily file, the compounded ",
+      "daily return is used. States as in Table \\\\ref{tab:t2}. Over 1930--2024, ", dd$hold_check$no_trade, " large-cap stock-months without trades (all ",
+      "before 1968) are valued at the last trade price."),
+    align = "lrrrrr", fs = 8, wide = TRUE)
+```
+
+```{r}
+#| label: tab-daily
+ordd <- c("LowBeta", "HighBeta", "Min-variance", "Large-cap VW", "Large-cap EW", "Beta neutral (fixed 25%)", "Low - high")
+z <- dmx[match(ordd, strategy)]
+fx <- function(x, d) formatC(x, format = "f", digits = d)
+df <- data.frame(P = c("Low beta (Q1)", "High beta (Q5)", "Minimum variance", "Cap weight", "Equal weight", "Beta neutral (25\\%)", "Low -- high"),
+  v = fx(100 * z$d_vol, 3), sr = fx(z$d_sr, 4), k = fx(z$d_k, 3), m = fx(100 * z$d_mdd, 3), b = fx(z$d_b, 5))
+names(df) <- c("Portfolio", "Volatility (pp)", "Sharpe ratio", "Excess kurtosis", "Max. drawdown (pp)", "Market beta")
+tab(df, "Sensitivity of the daily statistics to the treatment of delisting months, 1968--2024", "daily",
+    notes = paste0("Largest absolute difference from the baseline daily reconstruction (Section 8) across three alternatives: (i) in the ",
+      rcn("conflict"), " stock-months in which CRSP's monthly return excludes an in-month delisting-day return of its daily file (dsf\\\\_v2), the daily ",
+      "file's return is used; (ii) the earlier reconstruction from the database's daily table (crsp\\\\_daily, without delisting-day records), with the ",
+      "whole difference to the monthly return booked on the last trading day; (iii) daily returns without any delisting return. Baseline: daily file; ",
+      "delisting-day records dated in the first days of the next month (", rcn("next_month_delisting"), " stock-months of the cap-weighted portfolio), ",
+      "which CRSP's monthly file credits to the held month, booked on the held month's last trading day; in the ", rcn("conflict"), " conflicting ",
+      "months the monthly file is followed. Days without a record earn zero (proceeds held in cash until the month-end rebalancing)."),
+    align = "lrrrrr", fs = 8)
+```
+
+```{r}
+#| label: tab-a2
+vl <- c(base = "Stock-level B/P, cross-sectional trim (baseline)", pool = "Stock-level B/P, pooled 1968--2012 trim",
+        month = "Untrimmed B/P, 0.5\\% of months trimmed", none = "Untrimmed B/P, no trimming",
+        vw = "Value-weighted B/P within the quintiles", fy = "Book equity of calendar year $y-1$ in all months of $y$")
+mkS <- function(stg) {
+  z <- ss[strategy == stg & h == 12]
+  w <- dcast(z, variant ~ state, value.var = "value")[match(names(vl), variant)]
+  ag <- z[, .(agree = agree[1]), by = variant][match(names(vl), variant)]
+  data.frame(V = unname(vl), ag = f2(100 * ag$agree, 0), as.data.frame(lapply(w[, -1], function(v) f2(100 * v, 1))))
+}
+nm <- c("V", "ag", paste0("s", 1:5))
+cv <- data.frame(V = c("Chained excess return (baseline)", "Relative wealth $\\prod(1+r_{Q1})/\\prod(1+r_{Q5})$",
+                       "Wealth difference $\\prod(1+r_{Q1})-\\prod(1+r_{Q5})$ (cumulative)"), ag = c("", "", ""),
+                 as.data.frame(t(sapply(c("chained", "relative", "wealth_diff"), function(cl) f2(100 * cs[h == 60][order(state)][[cl]], 1)))))
+df <- rbind(setNames(mkS("LH"), nm), setNames(mkS("BN"), nm), setNames(cv, nm))
+names(df) <- c("Specification", "Same state (\\%)", states_lab)
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrr",
+    caption = "Sensitivity of the conditional returns to the state classification, and three multi-period return concepts, 1968--2012", label = "a2") |>
+  kable_styling(latex_options = "hold_position", font_size = 7.5) |>
+  add_header_above(c(" " = 2, "Valuation state" = 5)) |>
+  pack_rows("L--H, one-year return (%)", 1, 6, bold = FALSE, italic = TRUE) |>
+  pack_rows("BN, one-year return (%)", 7, 12, bold = FALSE, italic = TRUE) |>
+  pack_rows("L--H over five years, baseline states (% per year; last row: % of initial capital)", 13, 15, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("Same state: share of months classified in the same state as in the baseline. Calendar-year book equity is used from January, ",
+    "up to five months before the assumed June availability date, and serves only as a check on GFKSW's ``prior fiscal year''. The three return concepts describe different ",
+    "investments (monthly rebalanced long-short position, two separate buy-and-hold portfolios, a long-short position never rebalanced) and are not ",
+    "alternative estimates of one quantity."), general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+```{r}
+#| label: tab-a3
+gl <- data.table(state = 1:5, h12 = c(.11,.33,.73,.65,.53), h60 = c(.31,.52,.79,.71,.65),
+                 m12 = c(.18,.08,.15,.23,.24), m60 = c(.03,.14,.17,.12,.19))
+z12 <- W[strategy == "LH" & h == 12][order(state)]; z60 <- W[strategy == "LH" & h == 60][order(state)]
+df <- data.frame(State = states_lab,
+  a = f2(z12$b_hml), ap = paste0("[", f2(gl$h12), "]"), b = f2(z60$b_hml), bp = paste0("[", f2(gl$h60), "]"),
+  c = f2(z12$b_mom), cp = paste0("[", f2(gl$m12), "]"), d = f2(z60$b_mom), dp = paste0("[", f2(gl$m60), "]"))
+names(df) <- c("State", "$t+12$", "GFKSW", "$t+60$", "GFKSW", "$t+12$", "GFKSW", "$t+60$", "GFKSW")
+tab(df, "Average HML and MOM loadings of the low-minus-high portfolio by B/P spread state, 1968--2012 (GFKSW Table 4)", "a3",
+    notes = "Average four-factor slopes over overlapping windows, estimated as in Table \\\\ref{tab:t3}. GFKSW values in brackets.",
+    align = "lrrrrrrrr", fs = 8, header = c(" " = 1, "HML loading" = 4, "MOM loading" = 4))
+```
+
+```{r}
+#| label: tab-a4
+a1 <- res$T1_bpuniv[strategy != "Beta neutral (ex ante)"]
+a1 <- a1[match(c("Q1","Q2","Q3","Q4","Q5","Low - high","Beta neutral","Market"), strategy)]
+df <- data.frame(P = c("1 (low)", "2", "3", "4", "5 (high)", "Low -- high", "Beta neutral", "Market"),
+  a = f2(100 * a1$arith), g = f2(100 * a1$geo), b = f2(a1$beta_ante), s = f2(a1$sharpe), t = f2(a1$t))
+names(df) <- c("Beta quintile", "Arithmetic", "Geometric", "Beta", "Sharpe", "t-statistic")
+tab(df, "Table 1 restricted to large caps with a December fiscal year-end book value, 1968--2012", "a4",
+    notes = "Same construction as Table \\\\ref{tab:t1}, but the universe additionally requires a valid December-FYE book-to-price ratio. Returns in percent per month.",
+    align = "lrrrrr")
+```
+
+```{r}
+#| label: tab-a5
+mk5 <- function(stg) {
+  z <- CT[strategy == stg][order(state, h)]
+  e <- dcast(z, state ~ h, value.var = c("a_capm", "a_4f")); tt <- dcast(z, state ~ h, value.var = c("t_capm", "t_4f"))
+  ee <- as.data.frame(lapply(e[, -1], function(v) f2(100 * v))); t2 <- as.data.frame(lapply(tt[, -1], f2))
+  names(ee) <- names(t2) <- paste0("c", 1:6)
+  interleave(ee, t2, states_lab)
+}
+t5x <- rbind(mk5("LH"), mk5("BN"))
+names(t5x) <- c("State", "$t+12$", "$t+36$", "$t+60$", "$t+12$", "$t+36$", "$t+60$")
+kbl(t5x, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrr",
+    caption = "Alternative estimator: calendar-time regressions on stacked windows, 1968--2012", label = "a5") |>
+  kable_styling(latex_options = "hold_position", font_size = 7.5) |>
+  add_header_above(c(" " = 1, "CAPM alpha" = 3, "Four-factor alpha" = 3)) |>
+  pack_rows("Low-minus-high (L--H)", 1, 10, bold = FALSE, italic = TRUE) |>
+  pack_rows("Beta neutral (BN)", 11, 20, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("Alphas in percent per month. All window-month observations of a state are stacked and estimated in one regression, which ",
+    "equals a weighted regression on calendar months with weights equal to the number of windows covering each month. The estimand is a ",
+    "window-weighted average of monthly abnormal returns with factor loadings common to all windows of the state, not the average of window ",
+    "alphas in Table \\\\ref{tab:t3}. Newey-West t-statistics (12 lags) in parentheses, computed on the full monthly calendar: months that no window ",
+    "covers enter with a zero score, so that each lag spans calendar months."), general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+```{r}
+#| label: tab-gfkt
+mkg <- function(stg) {
+  z <- W[strategy == stg & h %in% c(12, 60)][order(state, h)]
+  tg <- dcast(z, state ~ h, value.var = c("t_gfk_capm", "t_gfk_4f"))
+  g <- gfk3[[stg]]
+  data.frame(State = states_lab, c1 = f2(tg$t_gfk_capm_12), g1 = f2(g$capm[, "t12"]), c2 = f2(tg$t_gfk_capm_60), g2 = f2(g$capm[, "t60"]),
+             c3 = f2(tg$t_gfk_4f_12), g3 = f2(g$f4[, "t12"]), c4 = f2(tg$t_gfk_4f_60), g4 = f2(g$f4[, "t60"]))
+}
+df <- rbind(mkg("LH"), mkg("BN"))
+names(df) <- c("State", "Ours", "GFKSW", "Ours", "GFKSW", "Ours", "GFKSW", "Ours", "GFKSW")
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrrr",
+    caption = "GFKSW-style t-statistics of the conditional alphas in Table \\ref{tab:t3}, 1968--2012", label = "gfkt") |>
+  kable_styling(latex_options = "hold_position", font_size = 8) |>
+  add_header_above(c(" " = 1, "12 months" = 2, "60 months" = 2, "12 months" = 2, "60 months" = 2)) |>
+  add_header_above(c(" " = 1, "CAPM alpha" = 4, "Four-factor alpha" = 4)) |>
+  pack_rows("Low-minus-high (L--H)", 1, 5, bold = FALSE, italic = TRUE) |>
+  pack_rows("Beta neutral (BN)", 6, 10, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("Ours: Newey-West t-statistic with $h$ lags on the sequence of window alphas of one state (formation months of the state in ",
+    "calendar order), our reading of GFKSW's procedure. GFKSW: their published t-statistics (their Table 3)."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+```{r}
+#| label: tab-a6
+z <- LD[order(is.na(dropped), dropped)]
+z <- rbind(z[is.na(dropped)], z[!is.na(dropped)])
+df <- data.frame(D = ifelse(is.na(z$dropped), "None (all formation months)", paste0(z$dropped, "s")),
+  n5 = z$n5, n1 = z$n1, lh = f2(100 * z$lh12, 1), bn = f2(100 * z$bn12, 1), a5 = f2(100 * z$a5_lh, 2), a5b = f2(100 * z$a5_bn, 2))
+names(df) <- c("Decade of formation months left out", "State 5", "State 1", "L--H", "BN", "L--H", "BN")
+tab(df, "Dependence of the central results on single decades, 1968--2012", "a6",
+    notes = paste0("State assignments are those of the full sample; the formation months of one decade are dropped at a time (the 1960s contain only ",
+      "December 1967 to December 1969). State 5 minus state 1: difference between the average one-year chained excess returns after states 5 and 1 ",
+      "(percentage points per year). CAPM alpha: average window alpha over 12-month windows after state 5 (percent per month)."),
+    align = "lrrrrrr", fs = 8,
+    header = c(" " = 1, "Windows (one year)" = 2, "State 5 minus state 1" = 2, "State-5 CAPM alpha" = 2))
+```
+
+```{r}
+#| label: tab-inf
+lab_b <- c("Null model, 12-month blocks", "Null model, 24-month blocks (baseline)", "Null model, 36-month blocks", "Null model, 60-month blocks",
+           "Volatility-preserving, 24-month blocks", "Formation-month blocks with states, 24 months")
+key_b <- list(c("null", 12), c("null", 24), c("null", 36), c("null", 60), c("vp", 24), c("pairs", 24))
+one_b <- function(stg, k) { z <- BC[strategy == stg & method == k[1] & block == as.integer(k[2]) & h == 12 & stat == "d51"]
+  c(f2(100 * z$se, 1), f2(z$t), pv(z$p_null)) }
+df <- do.call(rbind, lapply(seq_along(lab_b), function(i) as.data.frame(t(c(lab_b[i], one_b("LH", key_b[[i]]), one_b("BN", key_b[[i]]))))))
+df <- rbind(df, as.data.frame(t(c("Monte Carlo s.e. of the baseline s.e.", f2(100 * bc("LH", "null", 24L, "se_mc"), 2), "", "",
+                                   f2(100 * bc("BN", "null", 24L, "se_mc"), 2), "", ""))))
+names(df) <- c("Bootstrap", "s.e.", "$t$", "$p$", "s.e.", "$t$", "$p$")
+tab(df, "Inference for the central contrast: state 5 minus state 1, one-year returns, 1968--2012", "inf",
+    notes = paste0("Estimates: ", f2(100 * d51("LH"), 1), " (L--H) and ", f2(100 * d51("BN"), 1), " (BN) percentage points per year (Table \\\\ref{tab:t2bc}). ",
+      "s.e.: standard deviation of the bootstrap draws (percentage points); $t$ = estimate / s.e.; $p$: share of centred draws at least as large in absolute ",
+      "value as the estimate. Null model: monthly strategy and factor returns resampled jointly in circular blocks, state calendar fixed (Tables \\\\ref{tab:t2bc} ",
+      "and \\\\ref{tab:t3} use the 24-month indices). Volatility-preserving: returns standardised by their local volatility (centred 25-month window), ",
+      "resampled with the same indices and rescaled with the local volatility of the original calendar position. Formation-month blocks: blocks of consecutive ",
+      "formation months resampled together with their states and window returns. ", res$boot_info$B, " draws each. Monte Carlo s.e.: delta-method standard ",
+      "error of the bootstrap standard deviation."),
+    align = "lrrrrrr", fs = 8, header = c(" " = 1, "Low -- high" = 3, "Beta neutral" = 3))
+```
+
+```{r}
+#| label: tab-size
+tests <- c(gfksw_nw = "GFKSW-style Newey-West", null24 = "Null model, 24-month blocks", null60 = "Null model, 60-month blocks",
+           vp24 = "Volatility-preserving, 24-month blocks", pairs24 = "Formation-month blocks, 24 months")
+mk_sz <- function(stg) {
+  r_ <- function(tst, st, g) { x <- sct(stg, g, tst, st, "rej"); if (length(x)) f2(100 * x, 1) else "--" }
+  do.call(rbind, lapply(names(tests), function(tst) data.frame(T = tests[[tst]],
+    a = r_(tst, "state5", "iid"), b = r_(tst, "state5", "garch"), c = r_(tst, "state5", "observed_vol"),
+    d = r_(tst, "d51", "iid"), e = r_(tst, "d51", "garch"), f = r_(tst, "d51", "observed_vol"),
+    g = { x <- sct(stg, "observed_vol", tst, "d51", "crit95"); if (length(x)) f2(x) else "--" })))
+}
+df <- rbind(mk_sz("LH"), mk_sz("BN"))
+names(df) <- c("Test", "iid", "GARCH", "Obs. vol.", "iid", "GARCH", "Obs. vol.", "Obs. vol.")
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrr",
+    caption = "Simulated size of the tests for state averages and for the central contrast, one-year windows", label = "size") |>
+  kable_styling(latex_options = "hold_position", font_size = 7.5) |>
+  add_header_above(c(" " = 1, "State-5 mean: rejections (\\\\%)" = 3, "State 5 $-$ state 1: rejections (\\\\%)" = 3, "Critical value" = 1), escape = FALSE) |>
+  pack_rows("Low-minus-high (L--H)", 1, 5, bold = FALSE, italic = TRUE) |>
+  pack_rows("Beta neutral (BN)", 6, 10, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("Rejection rates of two-sided 5\\\\% tests of a true null (the states carry no information) in ", SCt$nsim[1], " simulated samples ",
+    "of 540 months with the actual state calendar of 1968--2012, ", SCt$B[1], " bootstrap draws per sample. iid: normal returns with the strategy's mean ",
+    "and volatility; GARCH: AR(1)-GARCH(1,1) with Student-$t$ errors, fitted to the strategy by maximum likelihood; Obs. vol.: the fitted AR(1) process with ",
+    "Student-$t$ errors scaled by the fitted conditional volatility of the actual data, so that volatile periods stay where they occurred. Rejections are ",
+    "counted around the simulated mean of each estimator. Critical value: 95\\\\% quantile of $|t|$ for the contrast under Obs. vol. (size-adjusted 5\\\\% ",
+    "critical value). Monte Carlo standard errors of the rejection rates: at most ", f2(100 * max(SCt$mc_se), 1), " percentage points."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+```{r}
+#| label: tab-t5
+T5 <- dcast(res$T5, state ~ h, value.var = "value")
+br <- res$T5_breaks
+g5 <- rbind(c(-.97,-10.68,-10.17,-10.20,-9.55,-8.89), c(-.38,-4.57,-5.67,-5.80,-6.15,-6.34), c(-.24,.22,-1.50,.02,.42,.29),
+            c(.18,.51,.28,-1.02,-1.58,-.79), c(.62,7.44,2.84,1.57,1.83,1.28))
+df <- data.frame(State = states_lab,
+  range = paste0(f2(br[1:5]), " to ", f2(br[2:6])),
+  as.data.frame(lapply(T5[, -1], function(v) f2(100 * v))),
+  p1 = paste0("[", f2(g5[, 2]), "]"), p5 = paste0("[", f2(g5[, 6]), "]"))
+names(df) <- c("State", "B/P spread", "$t+1$", "$t+12$", "$t+24$", "$t+36$", "$t+48$", "$t+60$", "$t+12$", "$t+60$")
+tab(df, "Future cumulative returns on the low-minus-high portfolio by B/P spread state, 1930--2012 (replication of GFKSW Table 5)", "t5",
+    notes = "Returns in percent; horizons beyond one month are annualised. States are formed over the formation months December 1929 to November 2012 as in Table \\\\ref{tab:t2}. GFKSW values in brackets.",
+    align = "llrrrrrrrr", fs = 8, header = c(" " = 2, "This replication" = 6, "GFKSW" = 2))
+```
+
+```{r}
+#| label: fig-cor
+#| fig-cap: "Rolling 48-month correlations between the low-minus-high portfolio and the HML and MOM factors, windows ending between June 1932 and December 2024 (GFKSW Figure 4, extended), plotted at the window's last month. Shaded areas are NBER recessions; the dashed line marks December 2012."
+#| fig-height: 2.3
+#| fig-width: 7
+x <- res$fig4[mid >= ym(1930L, 12L) & mid <= cfg$full[2] & is.finite(rho_hml)][, date := eom(mid)]
+d <- melt(x[, .(date, HML = rho_hml, MOM = rho_mom)], id.vars = "date")
+ggplot(d, aes(date, value, colour = variable, linetype = variable)) +
+  geom_rect(data = nber[start > as.Date("1931-01-01")], aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf),
+            inherit.aes = FALSE, fill = "grey85", alpha = 0.6) +
+  geom_hline(yintercept = 0, linewidth = 0.3) + geom_line(linewidth = 0.45) +
+  geom_vline(xintercept = as.Date("2012-12-31"), linetype = "dashed", linewidth = 0.3) +
+  scale_colour_manual(values = c("grey15", "grey55")) + scale_linetype_manual(values = c("solid", "longdash")) + labs(x = NULL, y = "Correlation") +
+  scale_y_continuous(limits = c(-1, 1)) + theme_paper
+```
+
+\FloatBarrier
+
+## B. Additional results {.unnumbered}
+
+```{r}
+#| label: tab-beta
+ordr <- c("beta_M36", "beta_M60", "beta_M120", "beta_D3", "beta_D12", "beta_D36", "beta_DD12")
+hdr <- c("M36", "M60", "M120", "D3", "D12", "D36", "DD12")
+z <- xA[match(ordr, spec)]
+fq1 <- res$beta_fc[q == 1][match(ordr, spec)]; fq5 <- res$beta_fc[q == 5][match(ordr, spec)]
+dmm <- dm[est2 == "beta_M60"][match(ordr, est1)]
+sb <- srb[match(ordr, spec)]
+rw <- function(lab, v) as.data.frame(t(c(lab, v)), stringsAsFactors = FALSE)
+df <- rbind(
+  rw("Q1 beta, ex ante", f2(z$b1_ante)), rw("Q1 beta, realised", f2(z$b1_real)),
+  rw("Q5 beta, ex ante", f2(z$b5_ante)), rw("Q5 beta, realised", f2(z$b5_real)),
+  rw("RMSE, own sort, Q1", f2(fq1$rmse)), rw("RMSE, own sort, Q5", f2(fq5$rmse)),
+  rw("RMSE, common assets", ifelse(is.na(dmm$rmse1), "--", f2(dmm$rmse1))),
+  rw("RMSE of M60, same assets", ifelse(is.na(dmm$rmse2), "--", f2(dmm$rmse2))),
+  rw("DM $t$ vs. M60", ifelse(is.na(dmm$dm_t), "--", f2(dmm$dm_t))),
+  rw("\\quad Holm $p$", ifelse(is.na(dmm$p_holm), "--", pv(dmm$p_holm))),
+  rw("L--H excess return (\\%)", f2(100 * z$lh, 1)), rw("\\quad $t$-statistic", f2(z$t_lh)),
+  rw("BN excess return (\\%)", f2(100 * z$bnd, 1)), rw("\\quad $t$-statistic", f2(z$t_bnd)),
+  rw("BN Sharpe ratio", f2(z$bnd_sharpe)),
+  rw("$\\Delta$SR vs. M60", ifelse(is.na(sb$diff), "--", f2(sb$diff))),
+  rw("\\quad Holm $p$", ifelse(is.na(sb$p_holm), "--", pv(sb$p_holm))),
+  rw("BN four-factor $\\alpha$ (\\%)", f2(100 * z$bnd_a4, 1)), rw("\\quad $t$-statistic", f2(z$bnd_t4)),
+  rw("Q1 turnover (\\% p.a.)", f2(100 * z$to1, 0)), rw("BN Sharpe ratio, net", f2(z$bnd_sharpe_net)),
+  rw("Valuation effect (pp)", f2(100 * z$val_effect, 1)))
+names(df) <- c("", hdr)
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrr",
+    caption = "Beta estimation frequency and window, 1968--2024 (exploratory)", label = "beta") |>
+  kable_styling(latex_options = "hold_position", font_size = 8) |>
+  add_header_above(c(" " = 1, "Monthly returns" = 3, "Daily returns" = 4)) |>
+  pack_rows("Panel A: beta forecasts", 1, 10, bold = FALSE, italic = TRUE) |>
+  pack_rows("Panel B: strategies (BN with ex-ante short ratio)", 11, 22, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("M36/M60/M120: monthly excess returns over 36, 60 or 120 months (minimum 24, 24, 60); D3/D12/D36: daily excess returns over ",
+    "3, 12 or 36 months (minimum 50, 190, 560 days); DD12: D12 with one Dimson lag. Same large-cap universe for all. Realised beta: slope of the ",
+    "quintile's monthly excess return on the market. Forecast target: realised beta of a quintile portfolio over the next 12 months, from monthly ",
+    "returns. Own sort: the estimator's own quintiles. Common assets: the quintiles of both sorts in a pair, so both estimators forecast the same ",
+    "portfolios; DM: Diebold-Mariano t-statistic of the squared-error difference (negative = better than M60; Newey-West, 12 lags). Newey-West ",
+    "t-statistics for returns. $\\\\Delta$SR: Ledoit-Wolf test of the BN Sharpe ratio against M60. Net: 10 bp per dollar traded and 25 bp lending fee. ",
+    "Valuation effect: 12-month L--H return after the highest minus after the lowest B/P spread state, with each estimator's own quintiles and states and windows over 1968--2024 (hence not equal to the 1968--2012 contrast of Table \\\\ref{tab:t2bc} for M60). Holm adjustments over the six comparisons with M60 (text: also over all ten forecast comparisons)."),
+    general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+```{r}
+#| label: tab-liq
+ordl <- c("LowBeta", "LowBeta buffer", "LowBeta quarterly", "LowBeta capped", "LowBeta (daily 12m)", "Min-variance", "Min-variance NL", "Large-cap EW", "Large-cap VW")
+v <- dv[match(ordl, strategy)]
+df <- data.frame(P = c("Low-beta quintile (Q1)", "Buffer rule", "Quarterly rebalancing", "Capped at 5\\%", "Daily beta (12 months)",
+                       "Minimum variance, monthly", "Minimum variance, daily", "Equal weight ($1/N$)", "Cap weight (benchmark)"),
+  n = f2(v$n, 0), w = f2(100 * v$wmax, 1), t10 = f2(100 * v$top10, 0), e = f2(v$effn, 0),
+  sz = f2(v$size_pct, 2), dvp = f2(v$dv_pct, 2), st = f2(100 * v$sturn, 1))
+names(df) <- c("Portfolio", "Positions", "Largest (\\%)", "Top 10 (\\%)", "Effective N", "Size pct.", "Volume pct.", "Share turn. (\\%)")
+tab(df, "Diversification and liquidity of the long-only portfolios, 1968--2024", "liq",
+    notes = paste0("Averages over rebalancing dates of the target weights. Positions: weights of at least 1 bp; effective N: $1/\\\\sum w_i^2$; size and ",
+      "volume percentiles: weight-averaged ranks by market capitalisation and dollar volume within the universe in the formation month; share turnover: monthly volume over shares outstanding ",
+      "(CRSP volume covers at least ", f2(100 * min(dv$liq_cov), 1), "\\\\% of each portfolio's weight). Similar volume ranks describe the stocks held, ",
+      "not a portfolio's trading cost or capacity, which depend on trade size and market impact."),
+    align = "lrrrrrrr", fs = 8, wide = TRUE)
+```
+
+```{r}
+#| label: fig-bp
+#| fig-cap: "Average book-to-price ratios of the lowest- and highest-beta quintiles and of all large caps, measured at the end of each formation month from December 1929 to November 2024 (their spread is shown in @fig-spread). Stock-level B/P ratios are trimmed cross-sectionally at 0.5% in each tail. Shaded areas are NBER recessions; dashed lines mark the first and last formation month of the GFKSW main sample (December 1967, November 2012). Book equity before Compustat coverage is from Davis, Fama and French (2000)."
+#| fig-height: 2.2
+#| fig-width: 7
+x <- s[fmid >= ym(1929L, 12L) & mid <= cfg$full[2]][, date := eom(fmid)]
+lv <- melt(x[, .(date, "Low beta (Q1)" = bp1, "High beta (Q5)" = bp5, "All large caps" = bp_large)], id.vars = "date")
+ggplot(lv, aes(date, value, colour = variable)) +
+  geom_rect(data = nber, aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf), inherit.aes = FALSE,
+            fill = "grey85", alpha = 0.6) +
+  geom_line(linewidth = 0.4) +
+  geom_vline(xintercept = c(eom(ym(1967L, 12L)), eom(ym(2012L, 11L))), linetype = "dashed", linewidth = 0.3) +
+  scale_colour_manual(values = c(pal[1], pal[2], "grey55")) + labs(x = NULL, y = "Book-to-price ratio") + theme_paper
+```
+
+```{r}
+#| label: tab-ls
+mkls <- function(tb) {
+  tb <- tb[match(c("Low - high", "Beta neutral (fixed 25%)", "Beta neutral (ex ante)", "Beta neutral (shrunk beta)"), strategy)]
+  est <- data.frame(mg = f2(100 * tb$mean_g, 1), sg = f2(tb$sharpe_g), b = f2(tb$beta), a1g = f2(100 * tb$a1_g, 1), a4g = f2(100 * tb$a4_g, 1),
+                    to = f2(100 * tb$to, 0), mn = f2(100 * tb$mean_n, 1), sn = f2(tb$sharpe_n), a1n = f2(100 * tb$a1_n, 1), a4n = f2(100 * tb$a4_n, 1))
+  tst <- data.frame(mg = f2(tb$t_g), sg = "", b = "", a1g = f2(tb$t1_g), a4g = f2(tb$t4_g), to = "", mn = "", sn = "", a1n = f2(tb$t1_n), a4n = f2(tb$t4_n))
+  interleave(est, tst, c("Low -- high", "Beta neutral (fixed 25\\%)", "Beta neutral (ex ante)", "Beta neutral (shrunk beta)"))
+}
+df <- rbind(mkls(LS), mkls(LSp), mkls(LSpub))
+names(df) <- c("Portfolio", "Excess", "SR", "Beta", "CAPM $\\alpha$", "4F $\\alpha$", "TO", "Excess", "SR", "CAPM $\\alpha$", "4F $\\alpha$")
+kbl(df, format = "latex", booktabs = TRUE, escape = FALSE, row.names = FALSE, linesep = "", align = "lrrrrrrrrrr",
+    caption = "Long-short low-beta strategies before and after trading and lending costs", label = "ls") |>
+  kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 7.5) |>
+  add_header_above(c(" " = 1, "Gross" = 6, "Net of costs" = 4)) |>
+  pack_rows("1968--2024", 1, 8, bold = FALSE, italic = TRUE) |>
+  pack_rows("2013--2024", 9, 16, bold = FALSE, italic = TRUE) |>
+  pack_rows("2016--2024", 17, 24, bold = FALSE, italic = TRUE) |>
+  footnote(general = paste0("Annualised percentages; Newey-West t-statistics in parentheses; Beta: realised market beta. Net returns deduct 10 bp per dollar ",
+    "traded on both legs and a lending fee of 25 bp per year on the short notional (scenario values); the ex-ante and shrunk-beta versions also pay for ",
+    "changes in the short ratio. Shrunk beta: short ratio $(0.6\\\\hat\\\\beta_{Q1}+0.4)/(0.6\\\\hat\\\\beta_{Q5}+0.4)$ as in Frazzini and Pedersen (2014). TO: annual ",
+    "turnover of both legs in percent of capital."), general_title = "", threeparttable = TRUE, escape = FALSE)
+```
+
+```{r}
+#| label: fig-costs
+#| fig-cap: "Net Sharpe ratio as a function of the one-way trading cost per dollar traded, 1968--2024, monthly rebalancing (buffer rule as described in Section 7). Costs are charged on each portfolio's turnover, including the cap-weighted benchmark's. All cost levels are scenarios, not estimates of actual costs; break-even costs above 50 basis points quoted in the text extrapolate beyond the range shown."
+#| fig-height: 2.3
+#| fig-width: 6.5
+cc <- res$LO_costs[strategy %in% c("LowBeta", "LowBeta buffer", "Min-variance", "Large-cap VW", "Large-cap EW")]
+cc[, strategy := factor(strategy, levels = c("LowBeta", "LowBeta buffer", "Min-variance", "Large-cap VW", "Large-cap EW"),
+                        labels = c("Low beta (Q1)", "Low beta, buffer", "Minimum variance (monthly estimation)", "Cap weight (benchmark)", "Equal weight"))]
+ggplot(cc, aes(1e4 * cost, sharpe, colour = strategy, linetype = strategy)) + geom_line(linewidth = 0.5) + geom_point(size = 1.2) +
+  scale_colour_manual(values = c(pal[1], col_buf, col_mv, pal[5], col_ew)) +
+  scale_linetype_manual(values = c("solid", "solid", "solid", "dashed", "solid")) +
+  labs(x = "One-way cost per dollar traded (basis points)", y = "Net Sharpe ratio") + theme_paper +
+  guides(colour = guide_legend(nrow = 1), linetype = guide_legend(nrow = 1))
+```
+
+\FloatBarrier
+
+## C. Reproducibility and use of AI tools {.unnumbered}
+
+All results are produced by build.R, which reads the university database read-only (`r paste0("\\texttt{", gsub("_", "\\\\_\\\\allowbreak{}", basename(res$meta$db)), "}")`, `r f2(res$meta$db_size / 2^30, 1)` GB, last modified `r format(res$meta$db_mtime, "%d %B %Y")`), builds the stock panel, estimates all betas, forms all portfolios and stores every table and time series in results/res.rds; paper.qmd reads only results/res.rds. 
+
+**Use of AI tools.** We used an AI assistant (Anthropic's Claude) to writ and debug the R code, to check the results and to draft and revise the text. The authors are responsible for the content.
